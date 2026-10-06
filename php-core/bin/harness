@@ -1,0 +1,432 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../autoload.php';
+
+use Harness\HarnessApp;
+
+$cliOptions = [];
+$nonOptionArgs = [];
+foreach ($argv as $i => $arg) {
+    if ($i === 0) continue;
+    if (str_starts_with($arg, '--')) {
+        $parts = explode('=', substr($arg, 2), 2);
+        $cliOptions[$parts[0]] = $parts[1] ?? true;
+    } else {
+        $nonOptionArgs[] = $arg;
+    }
+}
+
+$command = $nonOptionArgs[0] ?? $cliOptions['action'] ?? 'status';
+
+$dbPath = $cliOptions['db'] ?? (getenv('DATA_DIR') ? getenv('DATA_DIR') . '/harness.db' : __DIR__ . '/../../data/harness.db');
+$ipcSocket = $cliOptions['ipc-socket'] ?? (getenv('HARNESS_IPC_SOCKET') ?: '/var/run/harness.sock');
+$ipcTcp = $cliOptions['ipc-tcp'] ?? (getenv('HARNESS_IPC_TCP') ?: '127.0.0.1:9099');
+
+$app = new HarnessApp($dbPath, $ipcSocket, $ipcTcp);
+
+switch ($command) {
+    case 'migrate':
+        echo "Running database migrations...\n";
+        $app->migrate();
+        echo "Migrations completed successfully.\n";
+        break;
+
+    case 'run':
+    case 'session:run':
+        $sessionId = $cliOptions['session-id'] ?? (getenv('SESSION_ID') ?: 'sess_' . bin2hex(random_bytes(6)));
+        $task = getenv('TASK_PROMPT') ?: ($cliOptions['task'] ?? 'Perform workspace review and report architecture.');
+        $projectId = $cliOptions['project'] ?? (getenv('PROJECT_ID') ?: 'proj_default');
+        $teamId = $cliOptions['team'] ?? (getenv('TEAM_ID') ?: 'team_core');
+
+        echo "Starting session: {$sessionId}\n";
+        echo "Task: {$task}\n";
+
+        $app->migrate();
+        try {
+            $session = $app->runSession($sessionId, $task, $projectId, $teamId);
+            echo "Session completed with status: {$session->status->value}\n";
+            echo "Total Duration: {$session->totalDurationMs}ms\n";
+            echo "Prompt Tokens: {$session->totalPromptTokens}, Completion Tokens: {$session->totalCompletionTokens}\n";
+        } catch (\Throwable $e) {
+            echo "Session failed: " . $e->getMessage() . "\n";
+            exit(1);
+        }
+        break;
+
+    case 'session:stop':
+        $app->migrate();
+        $sessionId = $nonOptionArgs[1] ?? $cliOptions['session-id'] ?? $cliOptions['id'] ?? ($argv[2] ?? '');
+        if ($sessionId !== '') {
+            $pdo = new PDO("sqlite:{$dbPath}");
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $now = gmdate('Y-m-d H:i:s');
+            $upd = $pdo->prepare("UPDATE sessions SET status = 'failed', finished_at = :finished WHERE id = :id AND status = 'running'");
+            $upd->execute([':finished' => $now, ':id' => $sessionId]);
+            $updNodes = $pdo->prepare("UPDATE execution_nodes SET status = 'failed', finished_at = :finished, output_result = 'Cancelled by user' WHERE session_id = :id AND status IN ('active', 'calling_tool', 'waiting_human')");
+            $updNodes->execute([':finished' => $now, ':id' => $sessionId]);
+        }
+        echo json_encode(['ok' => true, 'session_id' => $sessionId]) . "\n";
+        break;
+
+    case 'projects:delete':
+        $app->migrate();
+        $id = $nonOptionArgs[1] ?? $cliOptions['id'] ?? ($argv[2] ?? '');
+        if ($id !== '') {
+            $pdo = new PDO("sqlite:{$dbPath}");
+            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            
+            // Delete related scheduled tasks, nodes, sessions, teams
+            $delSched = $pdo->prepare("DELETE FROM scheduled_tasks WHERE project_id = :id");
+            $delSched->execute([':id' => $id]);
+
+            $delNodes = $pdo->prepare("DELETE FROM execution_nodes WHERE session_id IN (SELECT id FROM sessions WHERE project_id = :id)");
+            $delNodes->execute([':id' => $id]);
+
+            $delSess = $pdo->prepare("DELETE FROM sessions WHERE project_id = :id");
+            $delSess->execute([':id' => $id]);
+
+            $delTeams = $pdo->prepare("DELETE FROM teams WHERE project_id = :id");
+            $delTeams->execute([':id' => $id]);
+
+            $del = $pdo->prepare("DELETE FROM projects WHERE id = :id");
+            $del->execute([':id' => $id]);
+
+            // Re-seed default project if none left
+            $cnt = (int)$pdo->query("SELECT COUNT(*) FROM projects")->fetchColumn();
+            if ($cnt === 0) {
+                $now = gmdate('Y-m-d H:i:s');
+                $pdo->prepare("INSERT INTO projects (id, name, workspace_path, stack, default_team_id, created_at) VALUES ('proj_default', 'Default Target Project', '/workspace', 'general', 'team_core', :created)")
+                    ->execute([':created' => $now]);
+            }
+        }
+        echo json_encode(['ok' => true], JSON_UNESCAPED_SLASHES) . "\n";
+        break;
+
+    case 'projects:list':
+        $app->migrate();
+        $projects = array_map(fn($p) => $p->toArray(), $app->projectRepo->findAll());
+        echo json_encode($projects, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'projects:save':
+        $app->migrate();
+        $raw = file_get_contents('php://stdin');
+        if (trim((string)$raw) === '' && isset($argv[2])) {
+            $raw = $argv[2];
+        }
+        $data = json_decode((string)$raw, true) ?: [];
+        $workspacePath = trim((string)($data['workspace_path'] ?? '/workspace'));
+        if ($workspacePath !== '' && !is_dir($workspacePath)) {
+            @mkdir($workspacePath, 0777, true);
+        }
+        $projId = (string)($data['id'] ?? 'proj_' . bin2hex(random_bytes(4)));
+        $projName = trim((string)($data['name'] ?? 'Project'));
+        $proj = new \Harness\Domain\Entity\Project(
+            id: $projId,
+            name: $projName ?: 'Project',
+            workspacePath: $workspacePath ?: '/workspace',
+            stack: (string)($data['stack'] ?? 'general'),
+            defaultContainer: !empty($data['default_container']) ? (string)$data['default_container'] : null,
+            guidelinesFile: !empty($data['guidelines_file']) ? (string)$data['guidelines_file'] : null,
+            defaultTeamId: (string)($data['default_team_id'] ?? 'team_core'),
+            createdAt: (string)($data['created_at'] ?? gmdate('Y-m-d H:i:s'))
+        );
+        $app->projectRepo->save($proj);
+        echo json_encode(['ok' => true, 'project' => $proj->toArray()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'teams:list':
+        $app->migrate();
+        $teams = array_map(fn($t) => $t->toArray(), $app->teamRepo->findAll());
+        echo json_encode($teams, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'teams:save':
+        $app->migrate();
+        $raw = file_get_contents('php://stdin');
+        if (trim((string)$raw) === '' && isset($argv[2])) {
+            $raw = $argv[2];
+        }
+        $data = json_decode((string)$raw, true) ?: [];
+        $team = new \Harness\Domain\Entity\Team(
+            id: (string)($data['id'] ?? 'team_' . bin2hex(random_bytes(4))),
+            projectId: (string)($data['project_id'] ?? 'proj_default'),
+            name: (string)($data['name'] ?? 'New Team'),
+            leadAgentId: (string)($data['lead_agent_id'] ?? 'agent_manager'),
+            memberAgentIds: (array)($data['member_agent_ids'] ?? []),
+            createdAt: (string)($data['created_at'] ?? gmdate('Y-m-d H:i:s'))
+        );
+        $app->teamRepo->save($team);
+        echo json_encode(['ok' => true, 'team' => $team->toArray()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'teams:delete':
+        $app->migrate();
+        $id = $nonOptionArgs[1] ?? ($argv[2] ?? '');
+        if ($id !== '') {
+            $app->teamRepo->delete($id);
+        }
+        echo json_encode(['ok' => true], JSON_UNESCAPED_SLASHES) . "\n";
+        break;
+
+    case 'agents:list':
+        $app->migrate();
+        $agents = array_map(fn($a) => $a->toArray(), $app->agentRepo->findAll());
+        echo json_encode($agents, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'agents:save':
+        $app->migrate();
+        $raw = file_get_contents('php://stdin');
+        if (trim((string)$raw) === '' && isset($argv[2])) {
+            $raw = $argv[2];
+        }
+        $data = json_decode((string)$raw, true) ?: [];
+        $agent = new \Harness\Domain\Entity\Agent(
+            id: (string)($data['id'] ?? 'agent_' . bin2hex(random_bytes(4))),
+            name: (string)($data['name'] ?? 'Agent'),
+            role: (string)($data['role'] ?? 'assistant'),
+            systemPrompt: (string)($data['system_prompt'] ?? ''),
+            model: (string)($data['model'] ?? 'gpt-4o'),
+            temperature: (float)($data['temperature'] ?? 0.2),
+            tokenLimit: (int)($data['token_limit'] ?? 8192),
+            allowedSkills: (array)($data['allowed_skills'] ?? []),
+            llmProfileId: !empty($data['llm_profile_id']) ? (string)$data['llm_profile_id'] : null,
+            allowedSubAgentIds: (array)($data['allowed_sub_agent_ids'] ?? []),
+            createdAt: (string)($data['created_at'] ?? gmdate('Y-m-d H:i:s'))
+        );
+        $app->agentRepo->save($agent);
+        echo json_encode(['ok' => true, 'agent' => $agent->toArray()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'sessions:delete':
+        $app->migrate();
+        $id = $nonOptionArgs[1] ?? $cliOptions['id'] ?? ($argv[2] ?? '');
+        $action = $cliOptions['action'] ?? '';
+        $projectId = $cliOptions['project_id'] ?? '';
+        $pdo = new PDO("sqlite:{$dbPath}");
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+        if ($action === 'clear_all') {
+            if ($projectId !== '') {
+                $delNodes = $pdo->prepare("DELETE FROM execution_nodes WHERE session_id IN (SELECT id FROM sessions WHERE project_id = :pid)");
+                $delNodes->execute([':pid' => $projectId]);
+                $delSess = $pdo->prepare("DELETE FROM sessions WHERE project_id = :pid");
+                $delSess->execute([':pid' => $projectId]);
+            } else {
+                $pdo->exec("DELETE FROM execution_nodes");
+                $pdo->exec("DELETE FROM sessions");
+            }
+            echo json_encode(['ok' => true, 'cleared' => 'all'], JSON_UNESCAPED_SLASHES) . "\n";
+        } elseif ($action === 'clear_finished') {
+            if ($projectId !== '') {
+                $delNodes = $pdo->prepare("DELETE FROM execution_nodes WHERE session_id IN (SELECT id FROM sessions WHERE status IN ('completed', 'failed') AND project_id = :pid)");
+                $delNodes->execute([':pid' => $projectId]);
+                $delSess = $pdo->prepare("DELETE FROM sessions WHERE status IN ('completed', 'failed') AND project_id = :pid");
+                $delSess->execute([':pid' => $projectId]);
+            } else {
+                $pdo->exec("DELETE FROM execution_nodes WHERE session_id IN (SELECT id FROM sessions WHERE status IN ('completed', 'failed'))");
+                $pdo->exec("DELETE FROM sessions WHERE status IN ('completed', 'failed')");
+            }
+            echo json_encode(['ok' => true, 'cleared' => 'finished'], JSON_UNESCAPED_SLASHES) . "\n";
+        } elseif ($action === 'clear_older_than') {
+            $days = max(1, (int)($cliOptions['days'] ?? 1));
+            $cutoff = gmdate('Y-m-d H:i:s', time() - ($days * 86400));
+            if ($projectId !== '') {
+                $delNodes = $pdo->prepare("DELETE FROM execution_nodes WHERE session_id IN (SELECT id FROM sessions WHERE started_at < :cutoff AND project_id = :pid)");
+                $delNodes->execute([':cutoff' => $cutoff, ':pid' => $projectId]);
+                $delSess = $pdo->prepare("DELETE FROM sessions WHERE started_at < :cutoff AND project_id = :pid");
+                $delSess->execute([':cutoff' => $cutoff, ':pid' => $projectId]);
+            } else {
+                $delNodes = $pdo->prepare("DELETE FROM execution_nodes WHERE session_id IN (SELECT id FROM sessions WHERE started_at < :cutoff)");
+                $delNodes->execute([':cutoff' => $cutoff]);
+                $delSess = $pdo->prepare("DELETE FROM sessions WHERE started_at < :cutoff");
+                $delSess->execute([':cutoff' => $cutoff]);
+            }
+            echo json_encode(['ok' => true, 'cleared' => 'older_than', 'days' => $days, 'cutoff' => $cutoff], JSON_UNESCAPED_SLASHES) . "\n";
+        } elseif ($id !== '') {
+            $ids = array_values(array_filter(array_map('trim', explode(',', (string)$id))));
+            if (!empty($ids)) {
+                $placeholders = implode(',', array_fill(0, count($ids), '?'));
+                $delNodes = $pdo->prepare("DELETE FROM execution_nodes WHERE session_id IN ({$placeholders})");
+                $delNodes->execute($ids);
+                $delSess = $pdo->prepare("DELETE FROM sessions WHERE id IN ({$placeholders})");
+                $delSess->execute($ids);
+            }
+            echo json_encode(['ok' => true, 'deleted_ids' => $ids], JSON_UNESCAPED_SLASHES) . "\n";
+        } else {
+            echo json_encode(['ok' => false, 'error' => 'No session id or action provided'], JSON_UNESCAPED_SLASHES) . "\n";
+        }
+        break;
+
+    case 'sessions:list':
+        $app->migrate();
+        $pdo = new PDO("sqlite:{$dbPath}");
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $projectId = (string)($cliOptions['project_id'] ?? ($nonOptionArgs[1] ?? ''));
+        $sql = "
+            SELECT s.id, s.project_id, s.team_id, s.status, s.total_prompt_tokens, s.total_completion_tokens, s.total_duration_ms, s.started_at, s.finished_at,
+                   COALESCE(p.name, s.project_id) as project_name,
+                   COALESCE(t.name, s.team_id) as team_name,
+                   (SELECT input_prompt FROM execution_nodes WHERE session_id = s.id AND parent_node_id IS NULL LIMIT 1) as task_prompt,
+                   (SELECT agent_name FROM execution_nodes WHERE session_id = s.id AND parent_node_id IS NULL LIMIT 1) as lead_agent_name,
+                   (SELECT COUNT(*) FROM execution_nodes WHERE session_id = s.id) as node_count
+            FROM sessions s
+            LEFT JOIN projects p ON p.id = s.project_id
+            LEFT JOIN teams t ON t.id = s.team_id
+        ";
+        $params = [];
+        if ($projectId !== '') {
+            $sql .= " WHERE s.project_id = :pid ";
+            $params[':pid'] = $projectId;
+        }
+        $sql .= " ORDER BY s.started_at DESC LIMIT 200;";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $sessions = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        echo json_encode($sessions, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'session:graph':
+        $app->migrate();
+        $sessionId = $nonOptionArgs[1] ?? $cliOptions['session-id'] ?? $cliOptions['id'] ?? ($argv[2] ?? '');
+        if ($sessionId === '') {
+            $raw = file_get_contents('php://stdin');
+            $data = json_decode((string)$raw, true) ?: [];
+            $sessionId = $data['id'] ?? '';
+        }
+        $pdo = new PDO("sqlite:{$dbPath}");
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+        $stmt = $pdo->prepare("SELECT * FROM sessions WHERE id = :id");
+        $stmt->execute([':id' => $sessionId]);
+        $session = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        $stmtNodes = $pdo->prepare("SELECT * FROM execution_nodes WHERE session_id = :id ORDER BY started_at ASC");
+        $stmtNodes->execute([':id' => $sessionId]);
+        $rawNodes = $stmtNodes->fetchAll(PDO::FETCH_ASSOC);
+
+        $nodes = [];
+        foreach ($rawNodes as $r) {
+            $dialog = [];
+            if (!empty($r['dialog'])) {
+                $dialog = json_decode((string)$r['dialog'], true) ?: [];
+            }
+            if (empty($dialog)) {
+                if (!empty($r['input_prompt'])) {
+                    $dialog[] = [
+                        'role' => 'user',
+                        'text' => (string)$r['input_prompt'],
+                        'timestamp' => (string)$r['started_at'],
+                    ];
+                }
+                if (!empty($r['output_result'])) {
+                    $dialog[] = [
+                        'role' => 'assistant',
+                        'text' => (string)$r['output_result'],
+                        'timestamp' => (string)($r['finished_at'] ?? $r['started_at']),
+                    ];
+                }
+            }
+
+            $toolCalls = [];
+            if (!empty($r['tool_calls'])) {
+                $toolCalls = json_decode((string)$r['tool_calls'], true) ?: [];
+            }
+
+            $nodes[] = [
+                'id' => (string)$r['id'],
+                'parentId' => $r['parent_node_id'] ? (string)$r['parent_node_id'] : null,
+                'agentId' => (string)$r['agent_id'],
+                'agentName' => (string)$r['agent_name'],
+                'role' => (string)$r['role'],
+                'status' => (string)$r['status'],
+                'depth' => (int)$r['depth'],
+                'inputPrompt' => (string)$r['input_prompt'],
+                'outputResult' => (string)$r['output_result'],
+                'promptTokens' => (int)$r['prompt_tokens'],
+                'completionTokens' => (int)$r['completion_tokens'],
+                'durationMs' => (int)$r['duration_ms'],
+                'activeTool' => $r['active_tool'] ? (string)$r['active_tool'] : null,
+                'startedAt' => (string)$r['started_at'],
+                'finishedAt' => $r['finished_at'] ? (string)$r['finished_at'] : null,
+                'dialog' => $dialog,
+                'toolCalls' => $toolCalls,
+            ];
+        }
+
+        echo json_encode([
+            'session' => $session ?: null,
+            'nodes' => $nodes,
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'tasks:schedule':
+        $app->migrate();
+        $raw = file_get_contents('php://stdin');
+        if (trim((string)$raw) === '' && isset($argv[2])) {
+            $raw = $argv[2];
+        }
+        $data = json_decode((string)$raw, true) ?: [];
+        $taskId = (string)($data['id'] ?? 'task_' . bin2hex(random_bytes(4)));
+        $task = trim((string)($data['task'] ?? ''));
+        $projId = (string)($data['project_id'] ?? 'proj_default');
+        $teamId = (string)($data['team_id'] ?? 'team_core');
+        $runAt = (string)($data['run_at'] ?? gmdate('Y-m-d H:i:s'));
+        $now = gmdate('Y-m-d H:i:s');
+
+        $pdo = new PDO("sqlite:{$dbPath}");
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $ins = $pdo->prepare("
+            INSERT INTO scheduled_tasks (id, task, project_id, team_id, run_at, status, created_at)
+            VALUES (:id, :task, :pid, :tid, :run_at, 'pending', :created)
+        ");
+        $ins->execute([
+            ':id' => $taskId,
+            ':task' => $task,
+            ':pid' => $projId,
+            ':tid' => $teamId,
+            ':run_at' => $runAt,
+            ':created' => $now,
+        ]);
+        echo json_encode(['ok' => true, 'id' => $taskId, 'run_at' => $runAt], JSON_UNESCAPED_SLASHES) . "\n";
+        break;
+
+    case 'tasks:scheduled':
+        $app->migrate();
+        $pdo = new PDO("sqlite:{$dbPath}");
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $stmt = $pdo->query("
+            SELECT st.*,
+                   COALESCE(p.name, st.project_id) as project_name,
+                   COALESCE(t.name, st.team_id) as team_name
+            FROM scheduled_tasks st
+            LEFT JOIN projects p ON p.id = st.project_id
+            LEFT JOIN teams t ON t.id = st.team_id
+            ORDER BY st.run_at ASC LIMIT 100;
+        ");
+        $tasks = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        echo json_encode($tasks, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'tasks:cancel':
+        $app->migrate();
+        $id = $nonOptionArgs[1] ?? ($argv[2] ?? '');
+        $pdo = new PDO("sqlite:{$dbPath}");
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $stmt = $pdo->prepare("DELETE FROM scheduled_tasks WHERE id = :id");
+        $stmt->execute([':id' => $id]);
+        echo json_encode(['ok' => true], JSON_UNESCAPED_SLASHES) . "\n";
+        break;
+
+    case 'status':
+    default:
+        echo "Harness PHP Core CLI\n";
+        echo "Database: {$dbPath}\n";
+        echo "IPC Socket: {$ipcSocket}\n";
+        echo "IPC TCP: {$ipcTcp}\n";
+        echo "Ping IPC: " . ($app->ipcClient->ping() ? "OK" : "UNREACHABLE") . "\n";
+        break;
+}

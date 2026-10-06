@@ -1,0 +1,28 @@
+{
+    "name": "harness/agent-core",
+    "description": "PHP 8.3 Core for Harness Multi-Agent Orchestrator",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.3",
+        "ext-pdo": "*",
+        "ext-pdo_sqlite": "*",
+        "ext-json": "*"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Harness\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Harness\\Tests\\": "tests/"
+        }
+    },
+    "bin": [
+        "bin/harness"
+    ]
+}

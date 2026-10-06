@@ -1,0 +1,47 @@
+services:
+  browser-mcp:
+    build:
+      context: ./docker/browser-mcp
+    container_name: harness-browser-mcp
+    restart: unless-stopped
+    ports:
+      - "9223:3000"
+    environment:
+      - PORT=3000
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+    networks:
+      - harness-net
+
+  harness:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: harness-agent
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8088}:8080"
+    environment:
+      - APP_ENV=${APP_ENV:-production}
+      - HTTP_PORT=8080
+      - HARNESS_IPC_SOCKET=/var/run/harness.sock
+      - WORKSPACE_DIR=/workspace
+      - DATA_DIR=/data
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-gpt-4o}
+      - BROWSER_MCP_URL=http://browser-mcp:3000
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+    volumes:
+      # Host Docker socket for DockerExecSkill
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Target project workspace
+      - ${WORKSPACE_PATH:-./workspace}:/workspace
+      # Persistent sqlite db, logs, traces
+      - ./data:/data
+    networks:
+      - harness-net
+
+networks:
+  harness-net:
+    driver: bridge

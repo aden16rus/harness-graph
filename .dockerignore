@@ -1,0 +1,9 @@
+.gopath
+.npm-cache
+node_modules
+frontend/node_modules
+go-engine/bin
+data/*.db
+data/logs/*
+!data/logs/.gitkeep
+.git

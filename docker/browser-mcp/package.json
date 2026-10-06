@@ -1,0 +1,8 @@
+{
+  "name": "browser-mcp",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "puppeteer-core": "^23.6.0"
+  }
+}
