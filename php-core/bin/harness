@@ -55,6 +55,34 @@ switch ($command) {
         }
         break;
 
+    case 'session:message':
+        $sessionId = $cliOptions['session-id'] ?? (getenv('SESSION_ID') ?: ($argv[2] ?? ''));
+        $message = getenv('TASK_PROMPT') ?: ($cliOptions['message'] ?? ($cliOptions['task'] ?? ($argv[3] ?? '')));
+
+        if ($sessionId === '' || $message === '') {
+            $raw = file_get_contents('php://stdin');
+            $data = json_decode((string)$raw, true) ?: [];
+            $sessionId = $sessionId ?: ($data['session_id'] ?? '');
+            $message = $message ?: ($data['message'] ?? ($data['task'] ?? ''));
+        }
+
+        if ($sessionId === '' || $message === '') {
+            echo "Error: session_id and message are required.\n";
+            exit(1);
+        }
+
+        echo "Sending followup message to manager for session: {$sessionId}\n";
+        $app->migrate();
+        try {
+            $session = $app->sendSessionMessage($sessionId, $message);
+            echo "Session followup completed with status: {$session->status->value}\n";
+            echo "Prompt Tokens: {$session->totalPromptTokens}, Completion Tokens: {$session->totalCompletionTokens}\n";
+        } catch (\Throwable $e) {
+            echo "Session followup failed: " . $e->getMessage() . "\n";
+            exit(1);
+        }
+        break;
+
     case 'session:stop':
         $app->migrate();
         $sessionId = $nonOptionArgs[1] ?? $cliOptions['session-id'] ?? $cliOptions['id'] ?? ($argv[2] ?? '');

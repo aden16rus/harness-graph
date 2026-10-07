@@ -27,7 +27,7 @@ final class CallSubAgentSkill implements SkillInterface
 
     public function getDescription(): string
     {
-        return 'Delegates an isolated sub-task to a specialized child sub-agent (backend, frontend, techlead, qa).';
+        return 'Delegates an isolated, stateless sub-task to a specialized child sub-agent. Each call starts with a clean context and has NO memory of prior calls.';
     }
 
     public function getParametersSchema(): array
@@ -44,11 +44,11 @@ final class CallSubAgentSkill implements SkillInterface
                 ],
                 'task' => [
                     'type' => 'string',
-                    'description' => 'Detailed, self-contained instructions for the sub-agent.',
+                    'description' => 'Detailed, completely self-contained instructions. CRITICAL: Every sub-agent call is isolated and stateless; it has NO memory of prior calls even for the same role. You MUST include all necessary background context, file paths, and instructions in this prompt.',
                 ],
                 'context' => [
                     'type' => 'object',
-                    'description' => 'Optional structured context or parameters to pass to the child agent.',
+                    'description' => 'Optional structured context, variables, or parameters to pass to the child agent.',
                 ],
             ],
             'required' => ['agent_role', 'task'],

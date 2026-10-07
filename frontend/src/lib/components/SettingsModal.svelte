@@ -61,6 +61,7 @@
   let systemSettings: any = {
     subagent_max_steps: 15,
     root_max_steps: 25,
+    subagent_max_tokens: 50000,
     loop_protection_enabled: true,
     loop_detection_threshold: 3,
     llm_max_retries: 3,
@@ -601,6 +602,7 @@
         systemSettings = {
           subagent_max_steps: data.subagent_max_steps ?? 15,
           root_max_steps: data.root_max_steps ?? 25,
+          subagent_max_tokens: data.subagent_max_tokens ?? 50000,
           loop_protection_enabled: data.loop_protection_enabled ?? true,
           loop_detection_threshold: data.loop_detection_threshold ?? 3,
           llm_max_retries: data.llm_max_retries ?? 3,
@@ -621,6 +623,7 @@
         body: JSON.stringify({
           subagent_max_steps: Number(systemSettings.subagent_max_steps),
           root_max_steps: Number(systemSettings.root_max_steps),
+          subagent_max_tokens: Number(systemSettings.subagent_max_tokens),
           loop_protection_enabled: Boolean(systemSettings.loop_protection_enabled),
           loop_detection_threshold: Number(systemSettings.loop_detection_threshold),
           llm_max_retries: Number(systemSettings.llm_max_retries),
@@ -1539,6 +1542,25 @@
                   />
                   <p class="text-[10px] text-slate-500 mt-1">
                     Максимальное число шагов выполнения для вызываемых саб-агентов (backend, frontend, qa, techlead). Предотвращает перерасход токенов на узких подзадачах.
+                  </p>
+                </div>
+
+                <div>
+                  <label for="subagent-tokens-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                    <span class="text-indigo-400 font-semibold">Лимит токенов сабагента:</span>
+                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{Number(systemSettings.subagent_max_tokens).toLocaleString()} токенов</span>
+                  </label>
+                  <input
+                    id="subagent-tokens-input"
+                    type="number"
+                    min="1000"
+                    step="5000"
+                    max="500000"
+                    bind:value={systemSettings.subagent_max_tokens}
+                    class="w-full bg-slate-950 border border-indigo-700/60 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400 ring-1 ring-indigo-500/20"
+                  />
+                  <p class="text-[10px] text-slate-500 mt-1">
+                    Максимальный бюджет токенов (Prompt + Completion) на одно выполнение саб-агента. Предотвращает неконтролируемый перерасход бюджета.
                   </p>
                 </div>
 

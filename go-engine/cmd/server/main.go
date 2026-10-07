@@ -135,6 +135,7 @@ func (s *LLMProfilesStore) getActive() *LLMProfile {
 type SystemSettings struct {
 	SubAgentMaxSteps       int  `json:"subagent_max_steps"`
 	RootMaxSteps           int  `json:"root_max_steps"`
+	SubAgentMaxTokens      int  `json:"subagent_max_tokens"`
 	LoopProtectionEnabled  bool `json:"loop_protection_enabled"`
 	LoopDetectionThreshold int  `json:"loop_detection_threshold"`
 	LLMMaxRetries          int  `json:"llm_max_retries"`
@@ -154,6 +155,7 @@ func newSystemSettingsStore(dataDir string) *SystemSettingsStore {
 		Settings: SystemSettings{
 			SubAgentMaxSteps:       15,
 			RootMaxSteps:           25,
+			SubAgentMaxTokens:      50000,
 			LoopProtectionEnabled:  true,
 			LoopDetectionThreshold: 3,
 			LLMMaxRetries:          3,
@@ -169,6 +171,9 @@ func newSystemSettingsStore(dataDir string) *SystemSettingsStore {
 			}
 			if loaded.RootMaxSteps > 0 {
 				store.Settings.RootMaxSteps = loaded.RootMaxSteps
+			}
+			if loaded.SubAgentMaxTokens >= 0 {
+				store.Settings.SubAgentMaxTokens = loaded.SubAgentMaxTokens
 			}
 			store.Settings.LoopProtectionEnabled = loaded.LoopProtectionEnabled
 			if loaded.LoopDetectionThreshold >= 2 {
@@ -727,6 +732,7 @@ func main() {
 			"TEAM_ID="+teamID,
 			"SUBAGENT_MAX_STEPS="+strconv.Itoa(curSt.SubAgentMaxSteps),
 			"ROOT_MAX_STEPS="+strconv.Itoa(curSt.RootMaxSteps),
+			"SUBAGENT_MAX_TOKENS="+strconv.Itoa(curSt.SubAgentMaxTokens),
 			"LOOP_PROTECTION_ENABLED="+strconv.FormatBool(curSt.LoopProtectionEnabled),
 			"LOOP_DETECTION_THRESHOLD="+strconv.Itoa(curSt.LoopDetectionThreshold),
 			"LLM_MAX_RETRIES="+strconv.Itoa(curSt.LLMMaxRetries),
@@ -764,6 +770,87 @@ func main() {
 			})
 		} else {
 			log.Printf("[Session] PHP harness finished successfully for session %s\n", sessionID)
+			wsHub.Broadcast(ws.Event{
+				Event:     "session.completed",
+				SessionID: sessionID,
+				Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+				Data: map[string]any{
+					"session_id": sessionID,
+				},
+			})
+		}
+	}
+
+	// Helper to send followup message to session manager
+	launchSessionMessage := func(sessionID, message string) {
+		args := []string{
+			cfg.PHPHarness,
+			"session:message",
+			fmt.Sprintf("--session-id=%s", sessionID),
+			fmt.Sprintf("--message=%s", message),
+		}
+
+		activeProf := profilesStore.getActive()
+		curSt := settingsStore.Get()
+		log.Printf("[Session] Sending followup message to manager (Session: %s)\n", sessionID)
+
+		wsHub.Broadcast(ws.Event{
+			Event:     "session.started",
+			SessionID: sessionID,
+			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+			Data: map[string]any{
+				"session_id": sessionID,
+				"message":    message,
+			},
+		})
+
+		cmd := exec.Command(cfg.PHPBin, args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		cmd.Env = append(os.Environ(),
+			"TASK_PROMPT="+message,
+			"SESSION_ID="+sessionID,
+			"SUBAGENT_MAX_STEPS="+strconv.Itoa(curSt.SubAgentMaxSteps),
+			"ROOT_MAX_STEPS="+strconv.Itoa(curSt.RootMaxSteps),
+			"SUBAGENT_MAX_TOKENS="+strconv.Itoa(curSt.SubAgentMaxTokens),
+			"LOOP_PROTECTION_ENABLED="+strconv.FormatBool(curSt.LoopProtectionEnabled),
+			"LOOP_DETECTION_THRESHOLD="+strconv.Itoa(curSt.LoopDetectionThreshold),
+			"LLM_MAX_RETRIES="+strconv.Itoa(curSt.LLMMaxRetries),
+			"LLM_RETRY_DELAY_SEC="+strconv.Itoa(curSt.LLMRetryDelaySec),
+		)
+
+		if activeProf != nil {
+			cmd.Env = append(cmd.Env,
+				"OPENAI_BASE_URL="+activeProf.BaseURL,
+				"OPENAI_API_KEY="+activeProf.APIKey,
+				"DEFAULT_MODEL="+activeProf.DefaultModel,
+			)
+		}
+
+		runningCmdsMu.Lock()
+		runningCmds[sessionID] = cmd
+		runningCmdsMu.Unlock()
+
+		defer func() {
+			runningCmdsMu.Lock()
+			delete(runningCmds, sessionID)
+			runningCmdsMu.Unlock()
+		}()
+
+		if err := cmd.Run(); err != nil {
+			log.Printf("[Session] PHP harness followup error: %v\n", err)
+			wsHub.Broadcast(ws.Event{
+				Event:     "session.failed",
+				SessionID: sessionID,
+				Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+				Data: map[string]any{
+					"session_id": sessionID,
+					"error":      err.Error(),
+				},
+			})
+		} else {
+			log.Printf("[Session] Followup completed for session: %s\n", sessionID)
 			wsHub.Broadcast(ws.Event{
 				Event:     "session.completed",
 				SessionID: sessionID,
@@ -996,6 +1083,34 @@ func main() {
 			"session_id": body.SessionID,
 			"project_id": body.ProjectID,
 			"team_id":    body.TeamID,
+		})
+	})
+
+	// API Send Followup Message to Session Manager
+	mux.HandleFunc("/api/session/message", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var body struct {
+			SessionID string `json:"session_id"`
+			Message   string `json:"message"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "Invalid body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if body.SessionID == "" || strings.TrimSpace(body.Message) == "" {
+			http.Error(w, "session_id and message are required", http.StatusBadRequest)
+			return
+		}
+
+		go launchSessionMessage(body.SessionID, strings.TrimSpace(body.Message))
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":     "started",
+			"session_id": body.SessionID,
 		})
 	})
 

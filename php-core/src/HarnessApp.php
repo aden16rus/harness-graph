@@ -224,4 +224,126 @@ final class HarnessApp
             throw $e;
         }
     }
+
+    public function sendSessionMessage(string $sessionId, string $message): Session
+    {
+        $session = $this->sessionRepo->findById($sessionId);
+        if ($session === null) {
+            throw new \RuntimeException("Session '{$sessionId}' not found.");
+        }
+
+        $project = $this->projectRepo->findById($session->projectId);
+        if ($project === null) {
+            throw new \RuntimeException("Project '{$session->projectId}' not found.");
+        }
+
+        $team = $this->teamRepo->findById($session->teamId);
+        if ($team === null) {
+            throw new \RuntimeException("Team '{$session->teamId}' not found.");
+        }
+
+        $leadAgent = $this->agentRepo->findById($team->leadAgentId);
+        if ($leadAgent === null) {
+            throw new \RuntimeException("Lead agent '{$team->leadAgentId}' not found.");
+        }
+
+        // Find existing nodes in this session to build context of previous accomplishments
+        $existingNodes = $this->nodeRepo->findBySessionId($sessionId);
+        $prevLeadNode = null;
+        foreach ($existingNodes as $n) {
+            if ($n->agentId === $leadAgent->id) {
+                $prevLeadNode = $n;
+            }
+        }
+
+        $session->status = SessionStatus::RUNNING;
+        $this->sessionRepo->save($session);
+
+        $now = gmdate('Y-m-d H:i:s');
+        $followupNodeId = 'node_followup_' . bin2hex(random_bytes(4));
+
+        $promptWithContext = "## Дополнительное указание от пользователя:\n{$message}";
+        if ($prevLeadNode !== null) {
+            $promptWithContext = "## Предыстория работы над проектом:\n" .
+                "Предыдущая задача: {$prevLeadNode->inputPrompt}\n" .
+                "Предыдущий результат: {$prevLeadNode->outputResult}\n\n" .
+                "## Новое указание пользователя (доработка):\n{$message}";
+        }
+
+        $followupNode = new ExecutionNode(
+            id: $followupNodeId,
+            sessionId: $session->id,
+            parentNodeId: $prevLeadNode?->id,
+            agentId: $leadAgent->id,
+            agentName: $leadAgent->name,
+            role: $leadAgent->role,
+            status: NodeStatus::ACTIVE,
+            depth: 0,
+            inputPrompt: $message,
+            startedAt: $now
+        );
+        $this->nodeRepo->save($followupNode);
+
+        $this->ipcClient->publishEvent('graph.node_created', $session->id, $followupNode->id, [
+            'id' => $followupNode->id,
+            'parent_node_id' => $followupNode->parentNodeId,
+            'agent_id' => $leadAgent->id,
+            'agent_name' => $leadAgent->name,
+            'role' => $leadAgent->role,
+            'depth' => 0,
+            'input_prompt' => $message,
+            'status' => NodeStatus::ACTIVE->value,
+            'started_at' => $followupNode->startedAt,
+        ]);
+
+        $startTime = microtime(true);
+        try {
+            $followupNode = $this->engine->executeNode(
+                node: $followupNode,
+                agent: $leadAgent,
+                taskPrompt: $promptWithContext,
+                project: $project,
+                session: $session
+            );
+
+            $followupNode->status = NodeStatus::COMPLETED;
+            $followupNode->finishedAt = gmdate('Y-m-d H:i:s');
+            $followupNode->durationMs = (int)((microtime(true) - $startTime) * 1000);
+            $this->nodeRepo->save($followupNode);
+
+            $this->ipcClient->publishEvent('graph.node_completed', $session->id, $followupNode->id, [
+                'output_result' => $followupNode->outputResult,
+                'prompt_tokens' => $followupNode->promptTokens,
+                'completion_tokens' => $followupNode->completionTokens,
+                'duration_ms' => $followupNode->durationMs,
+                'status' => NodeStatus::COMPLETED->value,
+            ]);
+
+            $session->status = SessionStatus::COMPLETED;
+            $session->finishedAt = gmdate('Y-m-d H:i:s');
+            $session->totalDurationMs += $followupNode->durationMs;
+            $this->sessionRepo->save($session);
+
+            return $session;
+        } catch (\Throwable $e) {
+            $followupNode->status = NodeStatus::FAILED;
+            $followupNode->outputResult = "Failed: " . $e->getMessage();
+            $followupNode->finishedAt = gmdate('Y-m-d H:i:s');
+            $followupNode->durationMs = (int)((microtime(true) - $startTime) * 1000);
+            $this->nodeRepo->save($followupNode);
+
+            $this->ipcClient->publishEvent('graph.node_failed', $session->id, $followupNode->id, [
+                'error' => $e->getMessage(),
+                'duration_ms' => $followupNode->durationMs,
+                'status' => NodeStatus::FAILED->value,
+            ]);
+
+            $session->status = SessionStatus::FAILED;
+            $session->finishedAt = gmdate('Y-m-d H:i:s');
+            $session->totalDurationMs += $followupNode->durationMs;
+            $this->sessionRepo->save($session);
+
+            throw $e;
+        }
+    }
 }

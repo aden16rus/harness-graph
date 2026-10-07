@@ -8,12 +8,14 @@ export interface ToolCallLog {
   output?: string;
   error?: string;
   durationMs?: number;
+  step?: number;
 }
 
 export interface DialogMessage {
   role: 'system' | 'user' | 'assistant' | 'tool' | 'thinking';
   text: string;
   timestamp: string;
+  step?: number;
   name?: string;
   call_id?: string;
   args?: Record<string, any>;
@@ -71,6 +73,7 @@ export interface ProjectSettings {
 export interface SystemSettings {
   subagent_max_steps: number;
   root_max_steps: number;
+  subagent_max_tokens: number;
   loop_protection_enabled: boolean;
   loop_detection_threshold: number;
   llm_max_retries: number;

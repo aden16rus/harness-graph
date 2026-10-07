@@ -127,6 +127,7 @@ class WebSocketManager {
           if (data.system_prompt) {
             initialDialog.push({
               role: 'system',
+              step: 0,
               text: data.system_prompt,
               timestamp: now,
             });
@@ -134,6 +135,7 @@ class WebSocketManager {
           if (data.input_prompt) {
             initialDialog.push({
               role: 'user',
+              step: 0,
               text: data.input_prompt,
               timestamp: now,
             });
@@ -161,32 +163,51 @@ class WebSocketManager {
           break;
         }
 
+        case 'graph.node_tokens': {
+          const node = updated.get(node_id);
+          if (node) {
+            const copy: AgentNodeData = {
+              ...node,
+              promptTokens: data.prompt_tokens ?? node.promptTokens,
+              completionTokens: data.completion_tokens ?? node.completionTokens,
+            };
+            updated.set(node_id, copy);
+          }
+          break;
+        }
+
         case 'graph.node_stream': {
           const node = updated.get(node_id);
           if (node) {
+            const dialog = [...node.dialog];
             if (data.reasoning_delta) {
-              const lastMsg = node.dialog[node.dialog.length - 1];
+              const lastIdx = dialog.length - 1;
+              const lastMsg = dialog[lastIdx];
               if (lastMsg && lastMsg.role === 'thinking') {
-                lastMsg.text += data.reasoning_delta;
+                dialog[lastIdx] = { ...lastMsg, text: lastMsg.text + data.reasoning_delta };
               } else {
-                node.dialog.push({
+                dialog.push({
                   role: 'thinking',
+                  step: data.step,
                   text: data.reasoning_delta,
                   timestamp: now,
                 });
               }
             } else if (data.delta) {
-              const lastMsg = node.dialog[node.dialog.length - 1];
+              const lastIdx = dialog.length - 1;
+              const lastMsg = dialog[lastIdx];
               if (lastMsg && lastMsg.role === 'assistant') {
-                lastMsg.text += data.delta;
+                dialog[lastIdx] = { ...lastMsg, text: lastMsg.text + data.delta };
               } else {
-                node.dialog.push({
+                dialog.push({
                   role: 'assistant',
+                  step: data.step,
                   text: data.delta,
                   timestamp: now,
                 });
               }
             }
+            updated.set(node_id, { ...node, dialog });
           }
           break;
         }
@@ -194,13 +215,16 @@ class WebSocketManager {
         case 'graph.node_reasoning': {
           const node = updated.get(node_id);
           if (node && data.text) {
-            const lastMsg = node.dialog[node.dialog.length - 1];
+            const dialog = [...node.dialog];
+            const lastMsg = dialog[dialog.length - 1];
             if (!lastMsg || lastMsg.role !== 'thinking' || lastMsg.text !== data.text) {
-              node.dialog.push({
+              dialog.push({
                 role: 'thinking',
+                step: data.step,
                 text: data.text,
                 timestamp: now,
               });
+              updated.set(node_id, { ...node, dialog });
             }
           }
           break;
@@ -209,25 +233,32 @@ class WebSocketManager {
         case 'graph.tool_call_started': {
           const node = updated.get(node_id);
           if (node) {
-            node.status = 'calling_tool';
-            node.activeTool = data.tool;
             const callId = data.call_id || String(Date.now());
             const newTc: ToolCallLog = {
               id: callId,
               name: data.tool,
               args: data.arguments || {},
               status: 'running',
+              step: data.step,
             };
-            node.toolCalls.push(newTc);
 
-            node.dialog.push({
-              role: 'tool',
+            const dialog = [...node.dialog, {
+              role: 'tool' as const,
+              step: data.step,
               name: data.tool,
               call_id: callId,
               args: data.arguments || {},
-              status: 'running',
+              status: 'running' as const,
               text: '',
               timestamp: now,
+            }];
+
+            updated.set(node_id, {
+              ...node,
+              status: 'calling_tool',
+              activeTool: data.tool,
+              toolCalls: [...node.toolCalls, newTc],
+              dialog,
             });
           }
           break;
@@ -236,26 +267,42 @@ class WebSocketManager {
         case 'graph.tool_call_finished': {
           const node = updated.get(node_id);
           if (node) {
-            node.status = 'active';
-            node.activeTool = undefined;
-            const tc = node.toolCalls.find(t => t.id === data.call_id) || node.toolCalls[node.toolCalls.length - 1];
-            if (tc) {
-              tc.status = data.success ? 'ok' : 'fail';
-              tc.output = data.output;
-              tc.error = data.error;
-              tc.durationMs = data.duration_ms;
-            }
+            const toolCalls = node.toolCalls.map(t => {
+              if (t.id === data.call_id || (t.name === data.tool && t.status === 'running')) {
+                return {
+                  ...t,
+                  status: data.success ? ('ok' as const) : ('fail' as const),
+                  output: data.output,
+                  error: data.error,
+                  durationMs: data.duration_ms,
+                  step: data.step ?? t.step,
+                };
+              }
+              return t;
+            });
 
-            const dialogItem = [...node.dialog].reverse().find(d => d.role === 'tool' && (d.call_id === data.call_id || (d.name === data.tool && d.status === 'running')));
-            if (dialogItem) {
-              dialogItem.status = data.success ? 'ok' : 'fail';
-              dialogItem.output = data.output;
-              dialogItem.error = data.error;
-              dialogItem.durationMs = data.duration_ms;
-              dialogItem.text = data.success ? (data.output || 'OK') : `ERROR: ${data.error}`;
-            } else {
-              node.dialog.push({
+            const dialog = [...node.dialog];
+            let found = false;
+            for (let i = dialog.length - 1; i >= 0; i--) {
+              const d = dialog[i];
+              if (d.role === 'tool' && (d.call_id === data.call_id || (d.name === data.tool && d.status === 'running'))) {
+                dialog[i] = {
+                  ...d,
+                  status: data.success ? 'ok' : 'fail',
+                  output: data.output,
+                  error: data.error,
+                  durationMs: data.duration_ms,
+                  step: data.step ?? d.step,
+                  text: data.success ? (data.output || 'OK') : `ERROR: ${data.error}`,
+                };
+                found = true;
+                break;
+              }
+            }
+            if (!found) {
+              dialog.push({
                 role: 'tool',
+                step: data.step,
                 name: data.tool,
                 call_id: data.call_id,
                 args: data.arguments,
@@ -267,6 +314,14 @@ class WebSocketManager {
                 timestamp: now,
               });
             }
+
+            updated.set(node_id, {
+              ...node,
+              status: 'active',
+              activeTool: undefined,
+              toolCalls,
+              dialog,
+            });
           }
           break;
         }
@@ -274,10 +329,17 @@ class WebSocketManager {
         case 'graph.loop_detected': {
           const node = updated.get(node_id);
           if (node) {
-            node.dialog.push({
-              role: 'system',
-              text: `🛑 Защита от зацикливания: ${data.reason || 'Обнаружен цикл'}`,
-              timestamp: now,
+            updated.set(node_id, {
+              ...node,
+              dialog: [
+                ...node.dialog,
+                {
+                  role: 'system',
+                  step: data.step,
+                  text: `🛑 Защита от зацикливания: ${data.reason || 'Обнаружен цикл'}`,
+                  timestamp: now,
+                },
+              ],
             });
           }
           break;
@@ -286,10 +348,36 @@ class WebSocketManager {
         case 'graph.llm_retry': {
           const node = updated.get(node_id);
           if (node) {
-            node.dialog.push({
-              role: 'system',
-              text: `🔁 Повтор запроса к LLM API (${data.attempt}/${data.max_retries}) через ${data.delay_sec} сек... (${data.reason || 'ошибка сети или квоты'})`,
-              timestamp: now,
+            updated.set(node_id, {
+              ...node,
+              dialog: [
+                ...node.dialog,
+                {
+                  role: 'system',
+                  step: data.step,
+                  text: `🔁 Повтор запроса к LLM API (${data.attempt}/${data.max_retries}) через ${data.delay_sec} сек... (${data.reason || 'ошибка сети или квоты'})`,
+                  timestamp: now,
+                },
+              ],
+            });
+          }
+          break;
+        }
+
+        case 'graph.token_limit_exceeded': {
+          const node = updated.get(node_id);
+          if (node) {
+            updated.set(node_id, {
+              ...node,
+              dialog: [
+                ...node.dialog,
+                {
+                  role: 'system',
+                  step: data.step,
+                  text: data.message || `🛑 Превышен лимит токенов саб-агента (${data.tokens}/${data.limit})`,
+                  timestamp: now,
+                },
+              ],
             });
           }
           break;
@@ -298,11 +386,14 @@ class WebSocketManager {
         case 'graph.human_required': {
           const node = updated.get(node_id);
           if (node) {
-            node.status = 'waiting_human';
-            node.humanPrompt = {
-              question: data.question,
-              options: data.options || [],
-            };
+            updated.set(node_id, {
+              ...node,
+              status: 'waiting_human',
+              humanPrompt: {
+                question: data.question,
+                options: data.options || [],
+              },
+            });
             selectedNodeId.set(node_id);
           }
           break;
@@ -311,12 +402,19 @@ class WebSocketManager {
         case 'graph.human_answered': {
           const node = updated.get(node_id);
           if (node) {
-            node.status = 'active';
-            node.humanPrompt = undefined;
-            node.dialog.push({
-              role: 'user',
-              text: `[Human Answer]: ${data.answer}`,
-              timestamp: now,
+            updated.set(node_id, {
+              ...node,
+              status: 'active',
+              humanPrompt: undefined,
+              dialog: [
+                ...node.dialog,
+                {
+                  role: 'user',
+                  step: data.step,
+                  text: `[Human Answer]: ${data.answer}`,
+                  timestamp: now,
+                },
+              ],
             });
           }
           break;
@@ -325,12 +423,15 @@ class WebSocketManager {
         case 'graph.node_completed': {
           const node = updated.get(node_id);
           if (node) {
-            node.status = 'completed';
-            node.outputResult = data.output_result || '';
-            node.promptTokens = data.prompt_tokens || node.promptTokens;
-            node.completionTokens = data.completion_tokens || node.completionTokens;
-            node.durationMs = data.duration_ms || node.durationMs;
-            node.activeTool = undefined;
+            updated.set(node_id, {
+              ...node,
+              status: 'completed',
+              outputResult: data.output_result || node.outputResult,
+              promptTokens: data.prompt_tokens ?? node.promptTokens,
+              completionTokens: data.completion_tokens ?? node.completionTokens,
+              durationMs: data.duration_ms ?? node.durationMs,
+              activeTool: undefined,
+            });
           }
           break;
         }
@@ -338,10 +439,13 @@ class WebSocketManager {
         case 'graph.node_failed': {
           const node = updated.get(node_id);
           if (node) {
-            node.status = 'failed';
-            node.outputResult = data.error || 'Failed';
-            node.durationMs = data.duration_ms || node.durationMs;
-            node.activeTool = undefined;
+            updated.set(node_id, {
+              ...node,
+              status: 'failed',
+              outputResult: data.error || 'Failed',
+              durationMs: data.duration_ms ?? node.durationMs,
+              activeTool: undefined,
+            });
           }
           break;
         }
@@ -404,6 +508,21 @@ export async function stopCurrentSession(): Promise<boolean> {
     return res.ok;
   } catch (e) {
     console.error('Failed to stop session:', e);
+    return false;
+  }
+}
+
+export async function sendFollowupMessage(sessionId: string, message: string): Promise<boolean> {
+  try {
+    sessionStore.update(s => ({ ...s, status: 'running' }));
+    const res = await fetch('/api/session/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, message }),
+    });
+    return res.ok;
+  } catch (e) {
+    console.error('Failed to send followup message:', e);
     return false;
   }
 }

@@ -63,11 +63,13 @@ final class ReActEngine
         if (empty($node->dialog)) {
             $node->dialog[] = [
                 'role' => 'system',
+                'step' => 0,
                 'text' => $systemPrompt,
                 'timestamp' => gmdate('Y-m-d H:i:s'),
             ];
             $node->dialog[] = [
                 'role' => 'user',
+                'step' => 0,
                 'text' => $taskPrompt,
                 'timestamp' => gmdate('Y-m-d H:i:s'),
             ];
@@ -85,6 +87,7 @@ final class ReActEngine
             ? ($this->settings?->subagentMaxSteps ?? 15)
             : ($this->settings?->rootMaxSteps ?? $this->maxSteps);
 
+        $subagentMaxTokens = $this->settings?->subagentMaxTokens ?? 50000;
         $loopProtectionEnabled = $this->settings?->loopProtectionEnabled ?? true;
         $loopThreshold = $this->settings?->loopDetectionThreshold ?? 3;
         $toolCallHistory = [];
@@ -124,6 +127,7 @@ final class ReActEngine
                         'max_retries' => $maxRetries,
                         'delay_sec' => $retryDelaySec,
                         'reason' => $lastLlmError,
+                        'step' => $step,
                     ]);
                     sleep($retryDelaySec);
                 }
@@ -182,6 +186,33 @@ final class ReActEngine
             $session->totalCompletionTokens += $completionTokens;
             $this->sessionRepo->save($session);
 
+            // Publish live real-time token telemetry event to graph
+            $this->ipcClient->publishEvent('graph.node_tokens', $session->id, $node->id, [
+                'prompt_tokens' => $node->promptTokens,
+                'completion_tokens' => $node->completionTokens,
+                'step' => $step,
+            ]);
+
+            // Sub-agent token limit check
+            $nodeTotalTokens = $node->promptTokens + $node->completionTokens;
+            if ($isSubAgent && $subagentMaxTokens > 0 && $nodeTotalTokens >= $subagentMaxTokens) {
+                $tokenLimitError = "🛑 Превышен лимит токенов саб-агента: израсходовано {$nodeTotalTokens} токенов (установленный лимит: {$subagentMaxTokens}). Выполнение шагов прервано.";
+                $this->ipcClient->publishEvent('graph.token_limit_exceeded', $session->id, $node->id, [
+                    'tokens' => $nodeTotalTokens,
+                    'limit' => $subagentMaxTokens,
+                    'step' => $step,
+                    'message' => $tokenLimitError,
+                ]);
+                $node->dialog[] = [
+                    'role' => 'system',
+                    'step' => $step,
+                    'text' => $tokenLimitError,
+                    'timestamp' => gmdate('Y-m-d H:i:s'),
+                ];
+                $finalAnswer = $tokenLimitError;
+                break; // Break the ReAct while loop!
+            }
+
             $parsedToolCalls = [];
             foreach ($rawToolCalls as $tc) {
                 $parsedToolCalls[] = ToolCall::fromArray($tc);
@@ -191,12 +222,14 @@ final class ReActEngine
             if ($reasoningContent !== '') {
                 $node->dialog[] = [
                     'role' => 'thinking',
+                    'step' => $step,
                     'text' => $reasoningContent,
                     'timestamp' => gmdate('Y-m-d H:i:s'),
                 ];
                 $this->ipcClient->publishEvent('graph.node_reasoning', $session->id, $node->id, [
                     'text' => $reasoningContent,
                     'role' => 'thinking',
+                    'step' => $step,
                 ]);
             }
 
@@ -204,6 +237,7 @@ final class ReActEngine
             if ($content !== '') {
                 $node->dialog[] = [
                     'role' => 'assistant',
+                    'step' => $step,
                     'text' => $content,
                     'timestamp' => gmdate('Y-m-d H:i:s'),
                 ];
@@ -279,10 +313,12 @@ final class ReActEngine
                         'tools' => $toolNamesList,
                         'repeats' => $consecutiveCount,
                         'reason' => $loopReason,
+                        'step' => $step,
                     ]);
 
                     $node->dialog[] = [
                         'role' => 'system',
+                        'step' => $step,
                         'text' => "🛑 Защита от зацикливания: {$loopReason} Выполнение шагов прервано.",
                         'timestamp' => gmdate('Y-m-d H:i:s'),
                     ];
@@ -290,12 +326,14 @@ final class ReActEngine
                     $finalAnswer = "🛑 Остановлено защитой от зацикливания: {$loopReason}";
                     break; // Break the ReAct while loop!
                 } elseif ($consecutiveCount === ($loopThreshold - 1) && $loopThreshold > 2) {
+                    // Inject warning in history
                     $toolNamesList = implode(', ', array_map(fn($tc) => $tc->name, $parsedToolCalls));
                     $history[] = Message::user(
                         "⚠️ ВНИМАНИЕ: Зафиксировано повторение вызова [{$toolNamesList}] с идентичными параметрами ({$consecutiveCount} раз). Не повторяйте этот вызов! Смените тактику, используйте другие инструменты или дайте итоговый ответ пользователю."
                     );
                     $node->dialog[] = [
                         'role' => 'system',
+                        'step' => $step,
                         'text' => "⚠️ Предупреждение о потенциальном зацикливании: инструмент [{$toolNamesList}] повторяется {$consecutiveCount} раз подряд.",
                         'timestamp' => gmdate('Y-m-d H:i:s'),
                     ];
@@ -316,6 +354,7 @@ final class ReActEngine
                     'tool' => $toolName,
                     'arguments' => $toolArgs,
                     'call_id' => $toolCall->id,
+                    'step' => $step,
                 ]);
 
                 $toolStart = microtime(true);
@@ -346,11 +385,13 @@ final class ReActEngine
                     'output' => $skillResult->output,
                     'error' => $skillResult->error,
                     'duration_ms' => $toolDurationMs,
+                    'step' => $step,
                 ];
 
                 // Record tool response in dialog
                 $node->dialog[] = [
                     'role' => 'tool',
+                    'step' => $step,
                     'name' => $toolName,
                     'call_id' => $toolCall->id,
                     'args' => $toolArgs,
@@ -371,6 +412,7 @@ final class ReActEngine
                     'output' => $skillResult->output,
                     'error' => $skillResult->error,
                     'duration_ms' => $toolDurationMs,
+                    'step' => $step,
                 ]);
 
                 // Append observation back into conversation history
@@ -397,6 +439,7 @@ final class ReActEngine
             if (!$lastDialog || $lastDialog['text'] !== $finalAnswer) {
                 $node->dialog[] = [
                     'role' => 'assistant',
+                    'step' => $step,
                     'text' => $finalAnswer,
                     'timestamp' => gmdate('Y-m-d H:i:s'),
                 ];

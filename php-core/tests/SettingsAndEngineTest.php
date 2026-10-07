@@ -96,12 +96,13 @@ final class SettingsAndEngineTest
 {
     public static function run(): void
     {
-        echo "Running Settings, Subagent Step Limits, Anti-Loop and Retry tests...\n";
+        echo "Running Settings, Subagent Step Limits, Anti-Loop, Retry and Token Limit tests...\n";
 
         // 1. Test SystemSettings defaults & file load
         $defaultSettings = new SystemSettings();
         assert($defaultSettings->subagentMaxSteps === 15, "Default subagent_max_steps should be 15");
         assert($defaultSettings->rootMaxSteps === 25, "Default root_max_steps should be 25");
+        assert($defaultSettings->subagentMaxTokens === 50000, "Default subagent_max_tokens should be 50000");
         assert($defaultSettings->loopProtectionEnabled === true, "Default loop_protection_enabled should be true");
         assert($defaultSettings->loopDetectionThreshold === 3, "Default loop_detection_threshold should be 3");
         assert($defaultSettings->llmMaxRetries === 3, "Default llm_max_retries should be 3");
@@ -111,6 +112,7 @@ final class SettingsAndEngineTest
         file_put_contents($tmpSettingsFile, json_encode([
             'subagent_max_steps' => 8,
             'root_max_steps' => 40,
+            'subagent_max_tokens' => 30000,
             'loop_protection_enabled' => true,
             'loop_detection_threshold' => 2,
             'llm_max_retries' => 4,
@@ -119,6 +121,7 @@ final class SettingsAndEngineTest
         $loadedSettings = SystemSettings::load($tmpSettingsFile);
         assert($loadedSettings->subagentMaxSteps === 8, "Loaded subagentMaxSteps should be 8");
         assert($loadedSettings->rootMaxSteps === 40, "Loaded rootMaxSteps should be 40");
+        assert($loadedSettings->subagentMaxTokens === 30000, "Loaded subagentMaxTokens should be 30000");
         assert($loadedSettings->loopDetectionThreshold === 2, "Loaded loopDetectionThreshold should be 2");
         assert($loadedSettings->llmMaxRetries === 4, "Loaded llmMaxRetries should be 4");
         assert($loadedSettings->llmRetryDelaySec === 1, "Loaded llmRetryDelaySec should be 1");
@@ -167,7 +170,6 @@ final class SettingsAndEngineTest
 
         // 2. Test Subagent Step Limit vs Root Step Limit
         $mockIpc = new MockIpcClient();
-        // Return tool call on every step so it reaches max steps
         $loopingToolResponse = [
             'content' => 'Doing step',
             'tool_calls' => [
@@ -185,7 +187,8 @@ final class SettingsAndEngineTest
         $customSettings = new SystemSettings(
             subagentMaxSteps: 5,
             rootMaxSteps: 10,
-            loopProtectionEnabled: false // disable loop protection to test raw step limit
+            subagentMaxTokens: 50000,
+            loopProtectionEnabled: false
         );
 
         $subAgentMgr = new SubAgentManager($agentRepo, $nodeRepo, $sessionRepo, $mockIpc, $contextManager, $skillRegistry, $policy);
@@ -201,7 +204,6 @@ final class SettingsAndEngineTest
             settings: $customSettings
         );
 
-        // Feed enough tool call responses
         $mockIpc->chatResponses = array_fill(0, 20, $loopingToolResponse);
         $mockIpc->chatCallCount = 0;
 
@@ -222,6 +224,11 @@ final class SettingsAndEngineTest
         assert($mockIpc->chatCallCount === 5, "Subagent should execute exactly 5 steps (subagentMaxSteps), executed: {$mockIpc->chatCallCount}");
         assert(str_contains($resSubNode->outputResult, '5'), "Subagent output should mention limit of 5: {$resSubNode->outputResult}");
         echo "✓ Subagent step limit (subagent_max_steps = 5) passed\n";
+
+        // Check that dialog items have step numbers
+        $stepsRecorded = array_filter($resSubNode->dialog, fn($d) => isset($d['step']) && $d['step'] > 0);
+        assert(!empty($stepsRecorded), "Dialog should contain items with step > 0");
+        echo "✓ Dialog step numbering recorded successfully\n";
 
         // 2b. Test Root agent node (depth = 0): should stop at rootMaxSteps (10)
         $mockIpc->chatResponses = array_fill(0, 20, $loopingToolResponse);
@@ -292,12 +299,9 @@ final class SettingsAndEngineTest
         $nodeRepo->save($loopNode);
 
         $resLoopNode = $engineLoop->executeNode($loopNode, $subagent, 'Stuck task', $project, $session);
-
-        // Should have stopped at 3 calls because loop threshold is 3
         assert($mockIpcLoop->chatCallCount === 3, "Anti-loop should stop at step 3, reached: {$mockIpcLoop->chatCallCount}");
         assert(str_contains($resLoopNode->outputResult, 'Защита от зацикливания') || str_contains($resLoopNode->outputResult, 'зацикливан'), "Output should indicate loop protection: {$resLoopNode->outputResult}");
 
-        // Verify that graph.loop_detected event was published
         $loopEvents = array_filter($mockIpcLoop->publishedEvents, fn($e) => $e['event'] === 'graph.loop_detected');
         assert(count($loopEvents) > 0, "graph.loop_detected event should be published");
         echo "✓ Anti-loop protection (threshold = 3) passed\n";
@@ -311,7 +315,6 @@ final class SettingsAndEngineTest
         );
 
         $mockIpcRetry = new MockIpcClient();
-        // Fail the first 2 calls with exception, succeed on 3rd attempt
         $mockIpcRetry->failChatUntilAttempt = 2;
         $mockIpcRetry->chatResponses = [
             [
@@ -348,12 +351,68 @@ final class SettingsAndEngineTest
         $nodeRepo->save($retryNode);
 
         $resRetryNode = $engineRetry->executeNode($retryNode, $rootAgent, 'Retry test task', $project, $session);
-        assert($mockIpcRetry->chatCallCount === 3, "Should have made 3 attempts (2 failed + 1 successful), made: {$mockIpcRetry->chatCallCount}");
+        assert($mockIpcRetry->chatCallCount === 3, "Should have made 3 attempts, made: {$mockIpcRetry->chatCallCount}");
         assert(str_contains($resRetryNode->outputResult, 'Success after retry'), "Result should be successful: {$resRetryNode->outputResult}");
 
         $retryEvents = array_filter($mockIpcRetry->publishedEvents, fn($e) => $e['event'] === 'graph.llm_retry');
         assert(count($retryEvents) === 2, "Expected 2 graph.llm_retry events, got: " . count($retryEvents));
         echo "✓ LLM retry mechanism (retry count = 3, retry delay = 1s) passed\n";
+
+        // 5. Test Subagent Token Limit
+        $tokenLimitSettings = new SystemSettings(
+            subagentMaxSteps: 20,
+            rootMaxSteps: 20,
+            subagentMaxTokens: 50, // very small token limit
+            loopProtectionEnabled: false
+        );
+
+        $mockIpcToken = new MockIpcClient();
+        // Each step produces 25 prompt + 25 completion = 50 tokens
+        $mockIpcToken->chatResponses = array_fill(0, 10, [
+            'content' => 'Step with tokens',
+            'tool_calls' => [
+                [
+                    'id' => 'call_tok',
+                    'type' => 'function',
+                    'function' => ['name' => 'read_file', 'arguments' => '{"path": "tok.txt"}'],
+                ],
+            ],
+            'prompt_tokens' => 25,
+            'completion_tokens' => 25,
+        ]);
+
+        $engineToken = new ReActEngine(
+            ipcClient: $mockIpcToken,
+            contextManager: $contextManager,
+            skillRegistry: $skillRegistry,
+            permissionPolicy: $policy,
+            nodeRepo: $nodeRepo,
+            sessionRepo: $sessionRepo,
+            subAgentManager: $subAgentMgr,
+            agentRepo: $agentRepo,
+            settings: $tokenLimitSettings
+        );
+
+        $tokenNode = new ExecutionNode(
+            id: 'node_token_test',
+            sessionId: $session->id,
+            parentNodeId: 'node_root_0',
+            agentId: $subagent->id,
+            agentName: $subagent->name,
+            role: $subagent->role,
+            status: NodeStatus::ACTIVE,
+            depth: 1, // Subagent
+            inputPrompt: 'Token heavy task'
+        );
+        $nodeRepo->save($tokenNode);
+
+        $resTokenNode = $engineToken->executeNode($tokenNode, $subagent, 'Token heavy task', $project, $session);
+        assert($mockIpcToken->chatCallCount === 1, "Subagent should halt after 1st step where it hits 50 tokens, ran: {$mockIpcToken->chatCallCount}");
+        assert(str_contains($resTokenNode->outputResult, 'Превышен лимит токенов'), "Output should indicate token limit: {$resTokenNode->outputResult}");
+
+        $tokEvents = array_filter($mockIpcToken->publishedEvents, fn($e) => $e['event'] === 'graph.token_limit_exceeded');
+        assert(count($tokEvents) === 1, "Expected 1 graph.token_limit_exceeded event");
+        echo "✓ Subagent token limit enforcement (subagent_max_tokens = 50) passed\n";
 
         echo "\n=======================================================\n";
         echo "ALL UNIT & INTEGRATION TESTS PASSED SUCCESSFULLY!\n";

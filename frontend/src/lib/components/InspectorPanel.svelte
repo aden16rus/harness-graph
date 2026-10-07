@@ -1,9 +1,11 @@
 <script lang="ts">
-  import { nodesStore, selectedNodeId, wsManager } from '../stores/websocket';
+  import { nodesStore, selectedNodeId, wsManager, sessionStore, sendFollowupMessage } from '../stores/websocket';
   import type { AgentNodeData } from '../types';
 
   let activeTab: 'dialog' | 'human' = 'dialog';
   let humanAnswerText = '';
+  let followupText = '';
+  let isSendingFollowup = false;
 
   $: currentNode = $selectedNodeId ? $nodesStore.get($selectedNodeId) : null;
 
@@ -18,6 +20,26 @@
     humanAnswerText = '';
   }
 
+  async function handleSendFollowup() {
+    if (!followupText.trim()) return;
+    const sessId = $sessionStore.sessionId;
+    if (!sessId || sessId === 'sess_default') {
+      alert('Нет активной сессии для отправки сообщения менеджеру.');
+      return;
+    }
+    isSendingFollowup = true;
+    try {
+      const ok = await sendFollowupMessage(sessId, followupText.trim());
+      if (ok) {
+        followupText = '';
+      } else {
+        alert('Ошибка при отправке сообщения менеджеру.');
+      }
+    } finally {
+      isSendingFollowup = false;
+    }
+  }
+
   function getSkillIcon(name: string = ''): string {
     const n = (name || '').toLowerCase();
     if (n.includes('read_file')) return '📄';
@@ -27,6 +49,7 @@
     if (n.includes('docker_exec')) return '🐳';
     if (n.includes('call_sub_agent')) return '🤖';
     if (n.includes('ask_human_expert')) return '👤';
+    if (n.includes('browse_link')) return '🌐';
     return '⚙️';
   }
 
@@ -41,6 +64,24 @@
     if (keys.length === 0) return '';
     return `${keys[0]}: ${String(args[keys[0]]).slice(0, 30)}`;
   }
+
+  // Helper to get step number if available or compute from dialog index
+  function getStepLabel(msg: any, index: number, dialog: any[]): string | null {
+    if (msg.step && msg.step > 0) {
+      return `Шаг #${msg.step}`;
+    }
+    // For historical dialogs without explicit step field
+    if (msg.role === 'thinking' || msg.role === 'tool' || msg.role === 'assistant') {
+      let turn = 1;
+      for (let i = 0; i < index; i++) {
+        if (dialog[i].role === 'assistant' || dialog[i].role === 'tool') {
+          turn++;
+        }
+      }
+      return `Шаг #${Math.ceil(turn / 2)}`;
+    }
+    return null;
+  }
 </script>
 
 <aside class="w-full border-l border-slate-800 bg-slate-900/95 flex flex-col h-full shadow-2xl backdrop-blur select-none z-10 text-slate-100">
@@ -50,7 +91,7 @@
         🔍
       </div>
       <h3 class="font-medium text-slate-400 text-sm">Node Inspector</h3>
-      <p class="text-xs text-slate-600 mt-1">Click any node on the graph to inspect isolated context, tool execution traces, or respond to expert queries.</p>
+      <p class="text-xs text-slate-600 mt-1">Кликните на любой узел графа, чтобы просмотреть диалог, шаги выполнения, вызовы инструментов или ответить на запрос эксперта.</p>
     </div>
   {:else}
     <!-- Node Header -->
@@ -81,7 +122,7 @@
         <div>
           <span class="text-slate-500 block text-[9px] uppercase">Tokens</span>
           <span class="font-semibold text-emerald-400">
-            {(currentNode.promptTokens + currentNode.completionTokens).toLocaleString()}
+            {((currentNode.promptTokens || 0) + (currentNode.completionTokens || 0)).toLocaleString()}
           </span>
         </div>
         <div>
@@ -105,7 +146,7 @@
         on:click={() => activeTab = 'dialog'}
         class="flex-1 py-2.5 px-3 text-center border-b-2 transition flex items-center justify-center gap-1.5 cursor-pointer {activeTab === 'dialog' ? 'border-indigo-500 text-indigo-400 bg-indigo-950/20' : 'border-transparent text-slate-400 hover:text-slate-200'}"
       >
-        <span>Диалог и Скилы</span>
+        <span>Диалог и Шаги</span>
         <span class="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-400">
           {currentNode.dialog.length}
         </span>
@@ -126,15 +167,20 @@
     <div class="flex-1 overflow-y-auto p-4 space-y-3 font-sans">
       {#if activeTab === 'dialog'}
         <div class="space-y-3">
-          {#each currentNode.dialog as msg}
+          {#each currentNode.dialog as msg, idx}
+            {@const stepLabel = getStepLabel(msg, idx, currentNode.dialog)}
+
             {#if msg.role === 'system'}
               {#if msg.text.startsWith('🛑') || msg.text.startsWith('⚠️') || msg.text.startsWith('🔁')}
-                <!-- Alert notification message for anti-loop and LLM retry -->
+                <!-- Alert notification message for anti-loop, token limit, and LLM retry -->
                 <div class="rounded-xl p-3 text-xs leading-relaxed {msg.text.startsWith('🛑') ? 'bg-rose-950/40 border border-rose-800/60 text-rose-200' : 'bg-amber-950/30 border border-amber-800/50 text-amber-200'}">
                   <div class="font-bold text-[10px] uppercase tracking-wider mb-1 flex items-center justify-between {msg.text.startsWith('🛑') ? 'text-rose-400' : 'text-amber-400'}">
                     <span class="flex items-center gap-1.5">
                       <span>{msg.text.startsWith('🛑') ? '🛑' : msg.text.startsWith('🔁') ? '🔁' : '⚠️'}</span>
                       <span>Системное оповещение</span>
+                      {#if stepLabel}
+                        <span class="px-1.5 py-0.2 rounded bg-slate-900/90 font-mono text-[9px] border border-slate-700/60">{stepLabel}</span>
+                      {/if}
                     </span>
                     <span class="text-slate-500 font-mono text-[9px]">{new Date(msg.timestamp).toLocaleTimeString()}</span>
                   </div>
@@ -164,7 +210,11 @@
               <div class="rounded-xl p-3 text-xs leading-relaxed bg-indigo-950/40 border border-indigo-800/40 ml-2">
                 <div class="flex items-center justify-between mb-1.5 text-[10px] uppercase font-bold tracking-wider text-indigo-400">
                   <span class="flex items-center gap-1.5">
-                    <span>👤</span> <span>Пользователь (User Prompt)</span>
+                    <span>👤</span>
+                    <span>Пользователь (User Prompt)</span>
+                    {#if stepLabel}
+                      <span class="px-1.5 py-0.2 rounded bg-indigo-900/80 font-mono text-[9px] text-indigo-200 border border-indigo-700/60">{stepLabel}</span>
+                    {/if}
                   </span>
                   <span class="text-slate-500 font-mono text-[9px]">{new Date(msg.timestamp).toLocaleTimeString()}</span>
                 </div>
@@ -177,7 +227,10 @@
                 <summary class="cursor-pointer list-none flex items-center justify-between text-[10px] uppercase font-bold tracking-wider text-purple-300 hover:text-purple-200">
                   <span class="flex items-center gap-1.5">
                     <span>🧠</span>
-                    <span>Рассуждения (Thinking / Reasoning)</span>
+                    <span>Рассуждения (Thinking)</span>
+                    {#if stepLabel}
+                      <span class="px-1.5 py-0.2 rounded bg-purple-900/80 font-mono text-[9px] text-purple-200 font-bold border border-purple-700/60 shadow-sm">{stepLabel}</span>
+                    {/if}
                   </span>
                   <div class="flex items-center gap-2">
                     <span class="text-slate-500 font-mono text-[9px]">{new Date(msg.timestamp).toLocaleTimeString()}</span>
@@ -194,18 +247,21 @@
               <details class="group rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs select-text transition">
                 <summary class="cursor-pointer list-none flex items-center justify-between">
                   <div class="flex items-center gap-2 flex-1 min-w-0 mr-2">
-                    <span class="text-sm">{getSkillIcon(msg.name)}</span>
+                    {#if stepLabel}
+                      <span class="px-1.5 py-0.2 rounded bg-violet-950/90 font-mono text-[9px] text-violet-300 font-bold border border-violet-700/60 shrink-0">{stepLabel}</span>
+                    {/if}
+                    <span class="text-sm shrink-0">{getSkillIcon(msg.name)}</span>
                     <span class="font-mono font-bold text-violet-400 truncate">
                       {msg.name || 'tool'}
                     </span>
                     {#if msg.args}
-                      <span class="text-[11px] text-slate-500 font-mono truncate max-w-[160px] hidden sm:inline">
+                      <span class="text-[11px] text-slate-500 font-mono truncate max-w-[140px] hidden sm:inline">
                         {getArgsPreview(msg.args)}
                       </span>
                     {/if}
                   </div>
 
-                  <div class="flex items-center gap-2">
+                  <div class="flex items-center gap-2 shrink-0">
                     {#if msg.durationMs}
                       <span class="text-[10px] font-mono text-slate-500">
                         {msg.durationMs}ms
@@ -235,11 +291,15 @@
               </details>
 
             {:else if msg.role === 'assistant'}
-              <!-- Assistant Step / Final Answer -->
+              <!-- Assistant Step / Output -->
               <div class="rounded-xl p-3 text-xs leading-relaxed bg-slate-800/70 border border-slate-700/60 mr-2 text-slate-200">
                 <div class="flex items-center justify-between mb-1.5 text-[10px] uppercase font-bold tracking-wider text-cyan-400">
                   <span class="flex items-center gap-1.5">
-                    <span>🤖</span> <span>Ассистент (Assistant Response)</span>
+                    <span>🤖</span>
+                    <span>Ассистент</span>
+                    {#if stepLabel}
+                      <span class="px-1.5 py-0.2 rounded bg-cyan-950 font-mono text-[9px] text-cyan-300 font-bold border border-cyan-700/60 shadow-sm">{stepLabel}</span>
+                    {/if}
                   </span>
                   <span class="text-slate-500 font-mono text-[9px]">{new Date(msg.timestamp).toLocaleTimeString()}</span>
                 </div>
@@ -306,6 +366,47 @@
             </div>
           {/if}
         </div>
+      {/if}
+    </div>
+
+    <!-- Sticky Bottom Bar: Send Message to Manager for Refinement -->
+    <div class="p-3 border-t border-slate-800 bg-slate-950/90 space-y-2 shrink-0">
+      <div class="flex items-center justify-between">
+        <span class="text-[11px] font-semibold text-slate-300 flex items-center gap-1.5">
+          <span>💬</span>
+          <span>Сообщение менеджеру (доработка задачи):</span>
+        </span>
+        {#if isSendingFollowup}
+          <span class="text-[10px] text-indigo-400 font-mono animate-pulse">Отправка...</span>
+        {/if}
+      </div>
+
+      <div class="flex gap-2">
+        <textarea
+          bind:value={followupText}
+          placeholder="Напишите, что нужно доделать или уточнить по задаче..."
+          rows="2"
+          disabled={isSendingFollowup || $sessionStore.status === 'running'}
+          class="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none font-sans disabled:opacity-50"
+        ></textarea>
+        <button
+          on:click={handleSendFollowup}
+          disabled={isSendingFollowup || !followupText.trim() || $sessionStore.status === 'running'}
+          class="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 disabled:opacity-50 text-white font-medium text-xs transition flex flex-col items-center justify-center gap-0.5 cursor-pointer shrink-0 shadow"
+          title="Отправить указания менеджеру для продолжения работы"
+        >
+          <span>🚀</span>
+          <span class="text-[10px] font-bold">Отправить</span>
+        </button>
+      </div>
+      {#if $sessionStore.status === 'running'}
+        <p class="text-[10px] text-amber-400/90">
+          ⏳ Сессия сейчас выполняется. Дождитесь завершения текущего этапа, чтобы отправить новые указания.
+        </p>
+      {:else}
+        <p class="text-[10px] text-slate-500">
+          Менеджер получит ваше указание с контекстом предыдущей работы и выполнит доработку через саб-агентов.
+        </p>
       {/if}
     </div>
   {/if}

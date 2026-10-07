@@ -8,6 +8,7 @@ final class SystemSettings
     public function __construct(
         public int $subagentMaxSteps = 15,
         public int $rootMaxSteps = 25,
+        public int $subagentMaxTokens = 50000,
         public bool $loopProtectionEnabled = true,
         public int $loopDetectionThreshold = 3,
         public int $llmMaxRetries = 3,
@@ -33,6 +34,10 @@ final class SystemSettings
             ? (int)$data['root_max_steps']
             : (int)(getenv('ROOT_MAX_STEPS') ?: 25);
 
+        $subagentTokens = isset($data['subagent_max_tokens'])
+            ? (int)$data['subagent_max_tokens']
+            : (int)(getenv('SUBAGENT_MAX_TOKENS') ?: 50000);
+
         $loopProt = isset($data['loop_protection_enabled'])
             ? (bool)$data['loop_protection_enabled']
             : (getenv('LOOP_PROTECTION_ENABLED') !== false && getenv('LOOP_PROTECTION_ENABLED') !== ''
@@ -54,6 +59,7 @@ final class SystemSettings
         return new self(
             subagentMaxSteps: max(1, $subagentSteps),
             rootMaxSteps: max(1, $rootSteps),
+            subagentMaxTokens: max(0, $subagentTokens),
             loopProtectionEnabled: $loopProt,
             loopDetectionThreshold: max(2, $loopThresh),
             llmMaxRetries: max(0, $llmRetries),
@@ -66,6 +72,7 @@ final class SystemSettings
         return [
             'subagent_max_steps' => $this->subagentMaxSteps,
             'root_max_steps' => $this->rootMaxSteps,
+            'subagent_max_tokens' => $this->subagentMaxTokens,
             'loop_protection_enabled' => $this->loopProtectionEnabled,
             'loop_detection_threshold' => $this->loopDetectionThreshold,
             'llm_max_retries' => $this->llmMaxRetries,

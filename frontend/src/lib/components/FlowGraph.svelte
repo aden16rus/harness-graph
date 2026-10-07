@@ -56,7 +56,7 @@
           id: item.id,
           type: 'custom',
           position: { x, y },
-          data: item,
+          data: { ...item },
         });
 
         if (item.parentId) {
