@@ -7,6 +7,7 @@
   import TaskModal from './lib/components/TaskModal.svelte';
   import TasksHistoryModal from './lib/components/TasksHistoryModal.svelte';
   import { wsManager } from './lib/stores/websocket';
+  import { fetchSystemSettings } from './lib/stores/settingsStore';
 
   let isSettingsOpen = false;
   let isTaskModalOpen = false;
@@ -18,6 +19,7 @@
 
   onMount(() => {
     wsManager.connect('all');
+    fetchSystemSettings();
     const saved = localStorage.getItem('inspector_panel_width');
     if (saved) {
       const parsed = parseInt(saved, 10);

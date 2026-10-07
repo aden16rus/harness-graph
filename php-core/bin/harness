@@ -481,6 +481,20 @@ switch ($command) {
         echo json_encode(['ok' => true], JSON_UNESCAPED_SLASHES) . "\n";
         break;
 
+    case 'settings:get':
+        $settings = $app->settings;
+        echo json_encode($settings->toArray(), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
+    case 'settings:save':
+        $app->migrate();
+        $raw = file_get_contents('php://stdin');
+        $data = json_decode((string)$raw, true) ?: [];
+        $settings = \Harness\Infrastructure\Settings\SystemSettings::fromArray($data);
+        $settings->saveToDiskAndDb(null, $app->pdo);
+        echo json_encode(['ok' => true, 'settings' => $settings->toArray()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
+
     case 'status':
     default:
         echo "Harness PHP Core CLI\n";

@@ -149,7 +149,7 @@ type SystemSettingsStore struct {
 	filePath string
 }
 
-func newSystemSettingsStore(dataDir string) *SystemSettingsStore {
+func newSystemSettingsStore(dataDir string, cfg *config.Config) *SystemSettingsStore {
 	filePath := filepath.Join(dataDir, "settings.json")
 	store := &SystemSettingsStore{
 		filePath: filePath,
@@ -188,6 +188,16 @@ func newSystemSettingsStore(dataDir string) *SystemSettingsStore {
 				store.Settings.LLMRetryDelaySec = loaded.LLMRetryDelaySec
 			}
 			store.Settings.GlobalSystemPrompt = loaded.GlobalSystemPrompt
+			return store
+		}
+	}
+
+	// Fallback to SQLite system_settings table via PHP
+	if out, err := runPHPCommand(cfg.PHPBin, cfg.PHPHarness, "settings:get"); err == nil {
+		var fromDB SystemSettings
+		if err := json.Unmarshal(out, &fromDB); err == nil && fromDB.SubAgentMaxSteps > 0 {
+			store.Settings = fromDB
+			_ = store.save()
 			return store
 		}
 	}
@@ -249,7 +259,7 @@ func main() {
 	profilesStore := newLLMProfilesStore(cfg.DataDir, cfg)
 
 	// Settings Store
-	settingsStore := newSystemSettingsStore(cfg.DataDir)
+	settingsStore := newSystemSettingsStore(cfg.DataDir, cfg)
 
 	// 1. NDJSON Logger
 	ndjson, err := logger.NewNDJSONLogger(cfg.LogDir, 2000)
@@ -392,6 +402,11 @@ func main() {
 			if err := settingsStore.Update(newSettings); err != nil {
 				http.Error(w, "Failed to save settings: "+err.Error(), http.StatusInternalServerError)
 				return
+			}
+
+			// Persist settings to SQLite database as well
+			if setBytes, err := json.Marshal(newSettings); err == nil {
+				_, _ = runPHPCommandWithStdin(cfg.PHPBin, cfg.PHPHarness, setBytes, "settings:save")
 			}
 
 			llmClient.SetRetryConfig(newSettings.LLMMaxRetries, newSettings.LLMRetryDelaySec)

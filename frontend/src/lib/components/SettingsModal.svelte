@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { projectsList, activeProjectId, fetchProjects, setActiveProject, deleteProject as apiDeleteProject } from '../stores/projectStore';
+  import { systemSettingsStore, fetchSystemSettings, saveSystemSettings as apiSaveSettings } from '../stores/settingsStore';
   import FolderPickerModal from './FolderPickerModal.svelte';
 
   export let isOpen = false;
@@ -91,7 +92,7 @@
       loadTeams(),
       loadAgents(),
       loadLLMProfiles(),
-      loadSystemSettings(),
+      fetchSystemSettings(),
     ]);
   }
 
@@ -596,48 +597,26 @@
     };
   }
 
-  // --- System Settings API ---
-  async function loadSystemSettings() {
-    try {
-      const res = await fetch('/api/settings');
-      if (res.ok) {
-        const data = await res.json();
-        systemSettings = {
-          subagent_max_steps: data.subagent_max_steps ?? 15,
-          root_max_steps: data.root_max_steps ?? 25,
-          subagent_max_tokens: data.subagent_max_tokens ?? 50000,
-          loop_protection_enabled: data.loop_protection_enabled ?? true,
-          loop_detection_threshold: data.loop_detection_threshold ?? 3,
-          llm_max_retries: data.llm_max_retries ?? 3,
-          llm_retry_delay_sec: data.llm_retry_delay_sec ?? 3,
-          global_system_prompt: data.global_system_prompt ?? '',
-        };
-      }
-    } catch (e) {
-      console.warn('Failed to load system settings:', e);
-    }
+  // --- System Settings API & Sync with Store ---
+  $: if ($systemSettingsStore && !saveStatus) {
+    systemSettings = { ...$systemSettingsStore };
   }
 
   async function saveSystemSettings() {
     try {
       saveStatus = 'Сохранение параметров...';
-      const res = await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          subagent_max_steps: Number(systemSettings.subagent_max_steps),
-          root_max_steps: Number(systemSettings.root_max_steps),
-          subagent_max_tokens: Number(systemSettings.subagent_max_tokens),
-          loop_protection_enabled: Boolean(systemSettings.loop_protection_enabled),
-          loop_detection_threshold: Number(systemSettings.loop_detection_threshold),
-          llm_max_retries: Number(systemSettings.llm_max_retries),
-          llm_retry_delay_sec: Number(systemSettings.llm_retry_delay_sec),
-          global_system_prompt: String(systemSettings.global_system_prompt || ''),
-        }),
+      const ok = await apiSaveSettings({
+        subagent_max_steps: Number(systemSettings.subagent_max_steps),
+        root_max_steps: Number(systemSettings.root_max_steps),
+        subagent_max_tokens: Number(systemSettings.subagent_max_tokens),
+        loop_protection_enabled: Boolean(systemSettings.loop_protection_enabled),
+        loop_detection_threshold: Number(systemSettings.loop_detection_threshold),
+        llm_max_retries: Number(systemSettings.llm_max_retries),
+        llm_retry_delay_sec: Number(systemSettings.llm_retry_delay_sec),
+        global_system_prompt: String(systemSettings.global_system_prompt || ''),
       });
-      if (res.ok) {
+      if (ok) {
         saveStatus = '✓ Параметры успешно сохранены!';
-        await loadSystemSettings();
         setTimeout(() => saveStatus = '', 2000);
       } else {
         saveStatus = 'Ошибка сохранения параметров';
@@ -645,6 +624,26 @@
     } catch (e) {
       saveStatus = 'Ошибка сети';
     }
+  }
+
+  function handleAutoSaveSystemSettings() {
+    apiSaveSettings({
+      subagent_max_steps: Number(systemSettings.subagent_max_steps),
+      root_max_steps: Number(systemSettings.root_max_steps),
+      subagent_max_tokens: Number(systemSettings.subagent_max_tokens),
+      loop_protection_enabled: Boolean(systemSettings.loop_protection_enabled),
+      loop_detection_threshold: Number(systemSettings.loop_detection_threshold),
+      llm_max_retries: Number(systemSettings.llm_max_retries),
+      llm_retry_delay_sec: Number(systemSettings.llm_retry_delay_sec),
+      global_system_prompt: String(systemSettings.global_system_prompt || ''),
+    });
+  }
+
+  function handleCloseModal() {
+    if (activeSection === 'general') {
+      handleAutoSaveSystemSettings();
+    }
+    onClose();
   }
 </script>
 
@@ -660,7 +659,7 @@
             <p class="text-[11px] text-slate-400">Изоляция проектов, управление ролями саб-агентов, LLM провайдеры и параметры надежности</p>
           </div>
         </div>
-        <button on:click={onClose} class="text-slate-500 hover:text-slate-300 text-lg cursor-pointer">✕</button>
+        <button on:click={handleCloseModal} class="text-slate-500 hover:text-slate-300 text-lg cursor-pointer">✕</button>
       </div>
 
       <!-- Nav Tabs -->
@@ -1561,6 +1560,7 @@
                 <textarea
                   id="global-prompt-input"
                   bind:value={systemSettings.global_system_prompt}
+                  on:blur={handleAutoSaveSystemSettings}
                   rows="4"
                   placeholder="Например: Всегда пишите чистый код с комментариями на русском языке, проверяйте граничные условия, строго соблюдайте архитектурные паттерны, не удаляйте важные файлы без подтверждения человека..."
                   class="w-full bg-slate-950 border border-indigo-800/60 rounded-lg p-2.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-400 resize-none font-sans"
@@ -1591,8 +1591,9 @@
                     id="subagent-steps-input"
                     type="number"
                     min="1"
-                    max="100"
+                    max="1000"
                     bind:value={systemSettings.subagent_max_steps}
+                    on:blur={handleAutoSaveSystemSettings}
                     class="w-full bg-slate-950 border border-indigo-700/60 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400 ring-1 ring-indigo-500/20"
                   />
                   <p class="text-[10px] text-slate-500 mt-1">
@@ -1612,6 +1613,7 @@
                     step="5000"
                     max="500000"
                     bind:value={systemSettings.subagent_max_tokens}
+                    on:blur={handleAutoSaveSystemSettings}
                     class="w-full bg-slate-950 border border-indigo-700/60 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400 ring-1 ring-indigo-500/20"
                   />
                   <p class="text-[10px] text-slate-500 mt-1">
@@ -1630,6 +1632,7 @@
                     min="1"
                     max="100"
                     bind:value={systemSettings.root_max_steps}
+                    on:blur={handleAutoSaveSystemSettings}
                     class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500"
                   />
                   <p class="text-[10px] text-slate-500 mt-1">
@@ -1657,6 +1660,7 @@
                     <input
                       type="checkbox"
                       bind:checked={systemSettings.loop_protection_enabled}
+                      on:change={handleAutoSaveSystemSettings}
                       class="sr-only peer"
                     />
                     <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
@@ -1674,6 +1678,7 @@
                     min="2"
                     max="10"
                     bind:value={systemSettings.loop_detection_threshold}
+                    on:blur={handleAutoSaveSystemSettings}
                     disabled={!systemSettings.loop_protection_enabled}
                     class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500 disabled:opacity-50"
                   />
@@ -1706,6 +1711,7 @@
                     min="0"
                     max="10"
                     bind:value={systemSettings.llm_max_retries}
+                    on:blur={handleAutoSaveSystemSettings}
                     class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500"
                   />
                   <p class="text-[10px] text-slate-500 mt-1">
@@ -1724,6 +1730,7 @@
                     min="1"
                     max="60"
                     bind:value={systemSettings.llm_retry_delay_sec}
+                    on:blur={handleAutoSaveSystemSettings}
                     class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500"
                   />
                   <p class="text-[10px] text-slate-500 mt-1">
@@ -1755,7 +1762,7 @@
             <span class="text-xs font-semibold text-emerald-400 animate-pulse">{saveStatus}</span>
           {/if}
         </div>
-        <button on:click={onClose} class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition text-xs cursor-pointer">
+        <button on:click={handleCloseModal} class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium transition text-xs cursor-pointer">
           Закрыть
         </button>
       </div>
