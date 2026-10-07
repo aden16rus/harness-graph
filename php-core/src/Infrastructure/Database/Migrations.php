@@ -20,6 +20,7 @@ final class Migrations
                 default_container TEXT,
                 guidelines_file TEXT,
                 default_team_id TEXT DEFAULT 'team_core',
+                project_prompt TEXT DEFAULT '',
                 created_at TEXT NOT NULL
             );
 
@@ -136,6 +137,12 @@ final class Migrations
 
         try {
             $this->pdo->exec("ALTER TABLE execution_nodes ADD COLUMN tool_calls TEXT;");
+        } catch (\Throwable) {
+            // Already exists
+        }
+
+        try {
+            $this->pdo->exec("ALTER TABLE projects ADD COLUMN project_prompt TEXT DEFAULT '';");
         } catch (\Throwable) {
             // Already exists
         }

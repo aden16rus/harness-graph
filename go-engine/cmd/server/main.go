@@ -133,13 +133,14 @@ func (s *LLMProfilesStore) getActive() *LLMProfile {
 }
 
 type SystemSettings struct {
-	SubAgentMaxSteps       int  `json:"subagent_max_steps"`
-	RootMaxSteps           int  `json:"root_max_steps"`
-	SubAgentMaxTokens      int  `json:"subagent_max_tokens"`
-	LoopProtectionEnabled  bool `json:"loop_protection_enabled"`
-	LoopDetectionThreshold int  `json:"loop_detection_threshold"`
-	LLMMaxRetries          int  `json:"llm_max_retries"`
-	LLMRetryDelaySec       int  `json:"llm_retry_delay_sec"`
+	SubAgentMaxSteps       int    `json:"subagent_max_steps"`
+	RootMaxSteps           int    `json:"root_max_steps"`
+	SubAgentMaxTokens      int    `json:"subagent_max_tokens"`
+	LoopProtectionEnabled  bool   `json:"loop_protection_enabled"`
+	LoopDetectionThreshold int    `json:"loop_detection_threshold"`
+	LLMMaxRetries          int    `json:"llm_max_retries"`
+	LLMRetryDelaySec       int    `json:"llm_retry_delay_sec"`
+	GlobalSystemPrompt     string `json:"global_system_prompt"`
 }
 
 type SystemSettingsStore struct {
@@ -160,6 +161,7 @@ func newSystemSettingsStore(dataDir string) *SystemSettingsStore {
 			LoopDetectionThreshold: 3,
 			LLMMaxRetries:          3,
 			LLMRetryDelaySec:       3,
+			GlobalSystemPrompt:     "",
 		},
 	}
 
@@ -185,6 +187,7 @@ func newSystemSettingsStore(dataDir string) *SystemSettingsStore {
 			if loaded.LLMRetryDelaySec > 0 {
 				store.Settings.LLMRetryDelaySec = loaded.LLMRetryDelaySec
 			}
+			store.Settings.GlobalSystemPrompt = loaded.GlobalSystemPrompt
 			return store
 		}
 	}
@@ -737,6 +740,7 @@ func main() {
 			"LOOP_DETECTION_THRESHOLD="+strconv.Itoa(curSt.LoopDetectionThreshold),
 			"LLM_MAX_RETRIES="+strconv.Itoa(curSt.LLMMaxRetries),
 			"LLM_RETRY_DELAY_SEC="+strconv.Itoa(curSt.LLMRetryDelaySec),
+			"GLOBAL_SYSTEM_PROMPT="+curSt.GlobalSystemPrompt,
 		)
 
 		if activeProf != nil {
@@ -822,6 +826,7 @@ func main() {
 			"LOOP_DETECTION_THRESHOLD="+strconv.Itoa(curSt.LoopDetectionThreshold),
 			"LLM_MAX_RETRIES="+strconv.Itoa(curSt.LLMMaxRetries),
 			"LLM_RETRY_DELAY_SEC="+strconv.Itoa(curSt.LLMRetryDelaySec),
+			"GLOBAL_SYSTEM_PROMPT="+curSt.GlobalSystemPrompt,
 		)
 
 		if activeProf != nil {

@@ -443,6 +443,24 @@ final class SettingsAndEngineTest
         assert($reconstructedHistory[3]->role === 'user' && $reconstructedHistory[3]->content === 'Continuation request');
         echo "✓ Conversation history reconstruction and dialog continuation passed\n";
 
+        // 7. Test Global Prompt and Project-Level Prompt injection
+        $promptSettings = new SystemSettings(
+            globalSystemPrompt: "Always write secure, well-tested code."
+        );
+        $promptContextMgr = new ContextManager($skillRegistry, $agentRepo, $promptSettings);
+
+        $testProjectWithPrompt = new Project(
+            id: 'proj_prompt_test',
+            name: 'Test Project with Prompt',
+            workspacePath: '/workspace/test',
+            projectPrompt: "Strict PSR-12 and Clean Architecture conventions required."
+        );
+
+        $builtPrompt = $promptContextMgr->buildSystemPrompt($rootAgent, $testProjectWithPrompt);
+        assert(str_contains($builtPrompt, 'Always write secure, well-tested code.'), "Prompt should contain global prompt");
+        assert(str_contains($builtPrompt, 'Strict PSR-12 and Clean Architecture conventions required.'), "Prompt should contain project prompt");
+        echo "✓ Global system prompt and project-level prompt injection passed\n";
+
         echo "\n=======================================================\n";
         echo "ALL UNIT & INTEGRATION TESTS PASSED SUCCESSFULLY!\n";
         echo "=======================================================\n";

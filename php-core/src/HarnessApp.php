@@ -65,10 +65,11 @@ final class HarnessApp
         $this->registerDefaultSkills();
 
         $this->permissionPolicy = new PermissionPolicy();
-        $this->contextManager = new ContextManager($this->skillRegistry, $this->agentRepo);
 
         $settingsPath = (getenv('DATA_DIR') ?: dirname($dbPath)) . '/settings.json';
         $this->settings = SystemSettings::load($settingsPath);
+
+        $this->contextManager = new ContextManager($this->skillRegistry, $this->agentRepo, $this->settings);
 
         $this->subAgentManager = new SubAgentManager(
             agentRepo: $this->agentRepo,

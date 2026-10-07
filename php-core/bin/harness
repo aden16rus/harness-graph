@@ -160,6 +160,7 @@ switch ($command) {
             defaultContainer: !empty($data['default_container']) ? (string)$data['default_container'] : null,
             guidelinesFile: !empty($data['guidelines_file']) ? (string)$data['guidelines_file'] : null,
             defaultTeamId: (string)($data['default_team_id'] ?? 'team_core'),
+            projectPrompt: (string)($data['project_prompt'] ?? ''),
             createdAt: (string)($data['created_at'] ?? gmdate('Y-m-d H:i:s'))
         );
         $app->projectRepo->save($proj);

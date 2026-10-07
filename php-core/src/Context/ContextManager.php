@@ -7,23 +7,34 @@ use Harness\Domain\Entity\Agent;
 use Harness\Domain\Entity\Project;
 use Harness\Domain\Repository\AgentRepositoryInterface;
 use Harness\Domain\ValueObject\Message;
+use Harness\Infrastructure\Settings\SystemSettings;
 use Harness\Skills\SkillRegistry;
 
 final class ContextManager
 {
     public function __construct(
         private readonly SkillRegistry $skillRegistry,
-        private readonly ?AgentRepositoryInterface $agentRepo = null
+        private readonly ?AgentRepositoryInterface $agentRepo = null,
+        private readonly ?SystemSettings $settings = null
     ) {}
 
     /**
-     * Builds the complete system prompt for an agent including project context and tools.
+     * Builds the complete system prompt for an agent including global guidelines,
+     * project-level instructions, workspace context, and tools.
      */
     public function buildSystemPrompt(Agent $agent, Project $project): string
     {
         $prompt = "# Role: {$agent->name} ({$agent->role})\n";
         $prompt .= "{$agent->systemPrompt}\n\n";
 
+        // 1. Global Guidelines (common for all projects across the whole system)
+        $globalPrompt = trim($this->settings?->globalSystemPrompt ?? (getenv('GLOBAL_SYSTEM_PROMPT') ?: ''));
+        if ($globalPrompt !== '') {
+            $prompt .= "## Global Guidelines (All Projects)\n";
+            $prompt .= "{$globalPrompt}\n\n";
+        }
+
+        // 2. Project Context
         $prompt .= "## Project Context\n";
         $prompt .= "- Project Name: {$project->name}\n";
         $prompt .= "- Tech Stack: {$project->stack}\n";
@@ -33,12 +44,19 @@ final class ContextManager
             $prompt .= "- Default Docker Container: {$project->defaultContainer}\n";
         }
 
+        // 3. Project-Specific Prompt (common for all tasks inside this project)
+        $projectPrompt = trim($project->projectPrompt);
+        if ($projectPrompt !== '') {
+            $prompt .= "\n### Project Guidelines & Architecture (All Tasks in {$project->name}):\n";
+            $prompt .= "{$projectPrompt}\n\n";
+        }
+
         if ($project->guidelinesFile !== null) {
             $guidelinesPath = rtrim($project->workspacePath, '/\\') . DIRECTORY_SEPARATOR . $project->guidelinesFile;
             if (file_exists($guidelinesPath) && is_readable($guidelinesPath)) {
                 $content = file_get_contents($guidelinesPath);
                 if ($content !== false && trim($content) !== '') {
-                    $prompt .= "\n### Project Guidelines ({$project->guidelinesFile}):\n" . trim($content) . "\n\n";
+                    $prompt .= "\n### Project Guidelines File ({$project->guidelinesFile}):\n" . trim($content) . "\n\n";
                 }
             }
         }
@@ -103,10 +121,6 @@ final class ContextManager
             return $history;
         }
 
-        // We need compaction:
-        // Keep index 0 (System) and index 1 (Initial User Task)
-        // Keep the last N messages (recent context)
-        // Compress middle messages
         $systemMsg = $history[0];
         $initialTask = $history[1] ?? null;
 
@@ -143,7 +157,6 @@ final class ContextManager
             }
         }
 
-        // Standard rough estimate: ~4 characters per token
         return (int)ceil($chars / 3.5);
     }
 }

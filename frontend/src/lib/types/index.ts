@@ -68,6 +68,7 @@ export interface ProjectSettings {
   llmBaseUrl: string;
   llmApiKey: string;
   defaultModel: string;
+  project_prompt?: string;
 }
 
 export interface SystemSettings {
@@ -78,4 +79,5 @@ export interface SystemSettings {
   loop_detection_threshold: number;
   llm_max_retries: number;
   llm_retry_delay_sec: number;
+  global_system_prompt?: string;
 }

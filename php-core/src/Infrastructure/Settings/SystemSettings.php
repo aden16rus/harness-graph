@@ -12,7 +12,8 @@ final class SystemSettings
         public bool $loopProtectionEnabled = true,
         public int $loopDetectionThreshold = 3,
         public int $llmMaxRetries = 3,
-        public int $llmRetryDelaySec = 3
+        public int $llmRetryDelaySec = 3,
+        public string $globalSystemPrompt = ''
     ) {}
 
     public static function load(?string $filePath = null): self
@@ -56,6 +57,10 @@ final class SystemSettings
             ? (int)$data['llm_retry_delay_sec']
             : (int)(getenv('LLM_RETRY_DELAY_SEC') ?: 3);
 
+        $globalPrompt = isset($data['global_system_prompt'])
+            ? (string)$data['global_system_prompt']
+            : (string)(getenv('GLOBAL_SYSTEM_PROMPT') ?: '');
+
         return new self(
             subagentMaxSteps: max(1, $subagentSteps),
             rootMaxSteps: max(1, $rootSteps),
@@ -63,7 +68,8 @@ final class SystemSettings
             loopProtectionEnabled: $loopProt,
             loopDetectionThreshold: max(2, $loopThresh),
             llmMaxRetries: max(0, $llmRetries),
-            llmRetryDelaySec: max(1, $llmDelay)
+            llmRetryDelaySec: max(1, $llmDelay),
+            globalSystemPrompt: $globalPrompt
         );
     }
 
@@ -77,6 +83,7 @@ final class SystemSettings
             'loop_detection_threshold' => $this->loopDetectionThreshold,
             'llm_max_retries' => $this->llmMaxRetries,
             'llm_retry_delay_sec' => $this->llmRetryDelaySec,
+            'global_system_prompt' => $this->globalSystemPrompt,
         ];
     }
 }

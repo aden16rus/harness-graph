@@ -22,6 +22,7 @@
     default_container: 'app-container',
     guidelines_file: 'README.md',
     default_team_id: 'team_core',
+    project_prompt: '',
   };
 
   // 2. Teams State
@@ -66,6 +67,7 @@
     loop_detection_threshold: 3,
     llm_max_retries: 3,
     llm_retry_delay_sec: 3,
+    global_system_prompt: '',
   };
 
   const allAvailableSkills = [
@@ -129,6 +131,7 @@
       default_container: 'app-container',
       guidelines_file: 'README.md',
       default_team_id: teams[0]?.id || 'team_core',
+      project_prompt: '',
     };
   }
 
@@ -607,6 +610,7 @@
           loop_detection_threshold: data.loop_detection_threshold ?? 3,
           llm_max_retries: data.llm_max_retries ?? 3,
           llm_retry_delay_sec: data.llm_retry_delay_sec ?? 3,
+          global_system_prompt: data.global_system_prompt ?? '',
         };
       }
     } catch (e) {
@@ -628,6 +632,7 @@
           loop_detection_threshold: Number(systemSettings.loop_detection_threshold),
           llm_max_retries: Number(systemSettings.llm_max_retries),
           llm_retry_delay_sec: Number(systemSettings.llm_retry_delay_sec),
+          global_system_prompt: String(systemSettings.global_system_prompt || ''),
         }),
       });
       if (res.ok) {
@@ -901,6 +906,27 @@
                     class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono focus:outline-none focus:border-indigo-500"
                   />
                 </div>
+              </div>
+
+              <!-- Project-Specific Prompt common for all tasks in this project -->
+              <div>
+                <label for="proj-prompt-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                  <span class="flex items-center gap-1.5 text-indigo-300 font-semibold">
+                    <span>📋</span>
+                    <span>Промпт проекта (общий для всех задач проекта):</span>
+                  </span>
+                  <span class="text-[10px] text-slate-500">внедряется в контекст всех саб-агентов проекта</span>
+                </label>
+                <textarea
+                  id="proj-prompt-input"
+                  bind:value={currentProject.project_prompt}
+                  rows="3"
+                  placeholder="Опишите требования к коду, архитектурные соглашения, специфику окружения или правила для всех задач внутри этого проекта..."
+                  class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-500 resize-none font-sans"
+                ></textarea>
+                <p class="text-[10px] text-slate-500 mt-1">
+                  * Этот промпт автоматически добавляется в системный контекст каждого саб-агента при выполнении любых задач в рамках данного проекта.
+                </p>
               </div>
 
               <div class="pt-2 flex items-center justify-between border-t border-slate-800/80">
@@ -1514,6 +1540,35 @@
                 <span>💾</span>
                 <span>Сохранить параметры</span>
               </button>
+            </div>
+
+            <!-- Card 0: Global System Prompt for all projects -->
+            <div class="p-4 rounded-xl border border-indigo-900/60 bg-indigo-950/25 space-y-3 shadow-lg">
+              <div class="flex items-center justify-between pb-2 border-b border-indigo-900/40">
+                <div class="flex items-center gap-2">
+                  <span class="text-base">🌐</span>
+                  <div>
+                    <h4 class="font-bold text-xs text-indigo-200">Глобальный системный промпт (общий для всех проектов)</h4>
+                    <p class="text-[10px] text-slate-400">Глобальные правила, стандарты качества, ограничения безопасности и стиль поведения для всех проектов системы</p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label for="global-prompt-input" class="block text-slate-300 font-medium mb-1 text-[11px]">
+                  Инструкции, применяемые ко всем проектам и сессиям:
+                </label>
+                <textarea
+                  id="global-prompt-input"
+                  bind:value={systemSettings.global_system_prompt}
+                  rows="4"
+                  placeholder="Например: Всегда пишите чистый код с комментариями на русском языке, проверяйте граничные условия, строго соблюдайте архитектурные паттерны, не удаляйте важные файлы без подтверждения человека..."
+                  class="w-full bg-slate-950 border border-indigo-800/60 rounded-lg p-2.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-400 resize-none font-sans"
+                ></textarea>
+                <p class="text-[10px] text-slate-500 mt-1">
+                  * Этот промпт автоматически добавляется в самое начало системных инструкций всех саб-агентов независимо от выбранного проекта.
+                </p>
+              </div>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
