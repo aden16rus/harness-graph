@@ -31,6 +31,19 @@
 
   // 3. Agents State
   let allAgents: any[] = [];
+  let isCreatingNewAgent = false;
+  let newAgent: any = {
+    id: '',
+    name: '',
+    role: '',
+    system_prompt: '',
+    model: 'gpt-4o',
+    temperature: 0.2,
+    token_limit: 8192,
+    allowed_skills: ['read_file', 'write_file', 'list_dir'],
+    llm_profile_id: '',
+    allowed_sub_agent_ids: [],
+  };
 
   // 4. LLM Profiles State
   let profiles: any[] = [];
@@ -120,7 +133,6 @@
 
   function onProjectNameInput() {
     if (isCreatingNewProject) {
-      // Slugify project name to suggest folder
       const slug = currentProject.name
         .toLowerCase()
         .replace(/[^a-z0-9а-яё_-]/gi, '-')
@@ -211,6 +223,7 @@
 
   $: currentTeam = teams.find(t => t.id === selectedTeamId) || (teams.length > 0 ? teams[0] : null);
   $: currentTeamMembers = allAgents.filter(a => currentTeam?.member_agent_ids?.includes(a.id));
+  $: availableNotInTeam = allAgents.filter(a => !currentTeam?.member_agent_ids?.includes(a.id));
 
   async function saveCurrentTeam() {
     if (!currentTeam) return;
@@ -287,6 +300,32 @@
     teams = [...teams];
   }
 
+  function addAgentToTeam(agentId: string) {
+    if (!currentTeam) return;
+    const members = [...(currentTeam.member_agent_ids || [])];
+    if (!members.includes(agentId)) {
+      members.push(agentId);
+      currentTeam.member_agent_ids = members;
+      teams = [...teams];
+      saveCurrentTeam();
+    }
+  }
+
+  function removeAgentFromTeam(agentId: string) {
+    if (!currentTeam) return;
+    if ((currentTeam.member_agent_ids || []).length <= 1) {
+      alert('В команде должен оставаться как минимум один саб-агент.');
+      return;
+    }
+    const agent = allAgents.find(a => a.id === agentId);
+    const agentName = agent?.name || agentId;
+    if (!confirm(`Исключить роль «${agentName}» из состава команды «${currentTeam.name}»?\n\n(Сама роль сохранится в системе и доступна для добавления в команды)`)) {
+      return;
+    }
+    toggleAgentInTeam(agentId);
+    saveCurrentTeam();
+  }
+
   function onTeamLeadChange() {
     if (!currentTeam) return;
     if (!currentTeam.member_agent_ids.includes(currentTeam.lead_agent_id)) {
@@ -303,6 +342,118 @@
     }
     teams = [...teams];
     saveCurrentTeam();
+  }
+
+  // --- Agents (Roles) CRUD ---
+  function startCreateNewAgent() {
+    isCreatingNewAgent = true;
+    const rnd = Math.random().toString(36).substring(2, 6);
+    const activeProf = profiles.find(p => p.id === activeProfileId) || profiles[0];
+    newAgent = {
+      id: 'agent_' + rnd,
+      name: '',
+      role: '',
+      system_prompt: '',
+      model: activeProf?.default_model || 'gpt-4o',
+      temperature: 0.2,
+      token_limit: 8192,
+      allowed_skills: ['read_file', 'write_file', 'list_dir'],
+      llm_profile_id: activeProfileId || '',
+      allowed_sub_agent_ids: [],
+    };
+  }
+
+  function onNewAgentNameInput() {
+    if (!newAgent.role || newAgent.role.startsWith('role_') || newAgent.role === '') {
+      const slug = newAgent.name
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/^_|_$/g, '');
+      if (slug) {
+        newAgent.role = slug;
+        newAgent.id = 'agent_' + slug;
+      }
+    }
+  }
+
+  function toggleSkillForNewAgent(skillId: string) {
+    const list = [...(newAgent.allowed_skills || [])];
+    const idx = list.indexOf(skillId);
+    if (idx >= 0) {
+      list.splice(idx, 1);
+    } else {
+      list.push(skillId);
+    }
+    newAgent.allowed_skills = list;
+    newAgent = { ...newAgent };
+  }
+
+  async function createAgentAndAddToTeam() {
+    if (!newAgent.name.trim()) {
+      alert('Пожалуйста, введите название новой роли саб-агента.');
+      return;
+    }
+    if (!newAgent.role.trim()) {
+      newAgent.role = 'role_' + Math.random().toString(36).substring(2, 6);
+    }
+    if (!newAgent.id.trim()) {
+      newAgent.id = 'agent_' + newAgent.role;
+    }
+
+    try {
+      saveStatus = 'Создание роли...';
+      const res = await fetch('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAgent),
+      });
+      if (res.ok) {
+        saveStatus = '✓ Роль успешно создана!';
+        await loadAgents();
+
+        // Add to current team automatically
+        if (currentTeam) {
+          const members = [...(currentTeam.member_agent_ids || [])];
+          if (!members.includes(newAgent.id)) {
+            members.push(newAgent.id);
+            currentTeam.member_agent_ids = members;
+            await saveCurrentTeam();
+          }
+        }
+
+        isCreatingNewAgent = false;
+        setTimeout(() => saveStatus = '', 1500);
+      } else {
+        saveStatus = 'Ошибка создания роли';
+      }
+    } catch (e) {
+      saveStatus = 'Ошибка сети';
+    }
+  }
+
+  async function deleteAgent(agentId: string) {
+    const agent = allAgents.find(a => a.id === agentId);
+    const agentName = agent?.name || agentId;
+    if (!confirm(`Вы действительно хотите безвозвратно удалить роль «${agentName}» (${agent?.role})?\n\nРоль будет удалена из базы данных и исключена из состава всех команд.`)) {
+      return;
+    }
+    try {
+      saveStatus = `Удаление ${agentName}...`;
+      const res = await fetch(`/api/agents?id=${encodeURIComponent(agentId)}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        saveStatus = `✓ Роль «${agentName}» удалена`;
+        await loadAgents();
+        await loadTeams();
+        setTimeout(() => saveStatus = '', 1500);
+      } else {
+        saveStatus = 'Ошибка при удалении роли';
+      }
+    } catch (e) {
+      saveStatus = 'Ошибка сети';
+    }
   }
 
   async function saveAgent(agent: any) {
@@ -498,7 +649,7 @@
           <span class="text-xl">⚙️</span>
           <div>
             <h2 class="font-bold text-base text-slate-100">Управление проектами, командами и окружением</h2>
-            <p class="text-[11px] text-slate-400">Изоляция проектов, матрица скилов саб-агентов, LLM провайдеры и параметры надежности</p>
+            <p class="text-[11px] text-slate-400">Изоляция проектов, управление ролями саб-агентов, LLM провайдеры и параметры надежности</p>
           </div>
         </div>
         <button on:click={onClose} class="text-slate-500 hover:text-slate-300 text-lg cursor-pointer">✕</button>
@@ -518,7 +669,7 @@
           class="py-3 px-4 border-b-2 font-medium transition flex items-center gap-1.5 cursor-pointer {activeSection === 'team' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'}"
         >
           <span>👥</span>
-          <span>Команды и Матрица Скилов ({teams.length})</span>
+          <span>Команды и Роли саб-агентов ({teams.length})</span>
         </button>
         <button
           on:click={() => activeSection = 'llm'}
@@ -772,7 +923,7 @@
             </div>
           </div>
 
-        <!-- ================= SECTION 2: TEAMS & AGENTS ================= -->
+        <!-- ================= SECTION 2: TEAMS & AGENTS (ROLES) ================= -->
         {:else if activeSection === 'team'}
           <div class="space-y-6">
             <!-- Team selector and creator bar -->
@@ -842,10 +993,21 @@
                   </span>
                 </div>
 
-                <!-- Members toggles -->
+                <!-- Members toggles & Add role button -->
                 <div>
-                  <span class="block text-slate-400 font-medium mb-1.5">Состав саб-агентов в команде:</span>
-                  <div class="flex flex-wrap gap-2">
+                  <div class="flex items-center justify-between mb-1.5">
+                    <span class="block text-slate-400 font-medium">Состав саб-агентов в команде:</span>
+                    <button
+                      type="button"
+                      on:click={startCreateNewAgent}
+                      class="px-2.5 py-1 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 text-[11px] font-semibold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+                    >
+                      <span>➕</span>
+                      <span>Создать новую роль</span>
+                    </button>
+                  </div>
+
+                  <div class="flex flex-wrap gap-2 items-center">
                     {#each allAgents as a}
                       {@const isMember = currentTeam?.member_agent_ids?.includes(a.id)}
                       {@const isLead = currentTeam?.lead_agent_id === a.id}
@@ -853,12 +1015,23 @@
                         type="button"
                         on:click={() => toggleAgentInTeam(a.id)}
                         class="px-2.5 py-1 rounded-lg border text-xs font-medium transition flex items-center gap-1.5 cursor-pointer {isLead ? 'bg-amber-950/80 border-amber-500 text-amber-200' : isMember ? 'bg-indigo-950/80 border-indigo-600 text-indigo-200' : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'}"
+                        title={isMember ? 'Кликните, чтобы исключить из команды' : 'Кликните, чтобы включить в команду'}
                       >
                         <span>{isLead ? '👑' : isMember ? '✓' : '+'}</span>
                         <span>{a.name}</span>
                         <span class="text-[10px] opacity-70 uppercase">({a.role})</span>
                       </button>
                     {/each}
+
+                    <button
+                      type="button"
+                      on:click={startCreateNewAgent}
+                      class="px-2.5 py-1 rounded-lg border border-dashed border-indigo-700/60 bg-indigo-950/20 hover:bg-indigo-900/40 text-indigo-300 text-xs font-medium transition flex items-center gap-1 cursor-pointer"
+                      title="Создать новую роль саб-агента"
+                    >
+                      <span>➕</span>
+                      <span>Новая роль</span>
+                    </button>
                   </div>
                 </div>
 
@@ -874,12 +1047,157 @@
                 </div>
               </div>
 
+              <!-- ================= Inline Role Creator Form ================= -->
+              {#if isCreatingNewAgent}
+                <div class="p-5 rounded-xl border border-indigo-500/70 bg-indigo-950/30 space-y-4 shadow-xl ring-1 ring-indigo-500/30 animate-in fade-in duration-200">
+                  <div class="flex items-center justify-between border-b border-indigo-800/60 pb-3">
+                    <div class="flex items-center gap-2">
+                      <span class="text-base">➕</span>
+                      <div>
+                        <h4 class="font-bold text-sm text-indigo-200">Создание новой роли саб-агента</h4>
+                        <p class="text-[10px] text-slate-400">Роль будет сохранена в системе и автоматически добавлена в текущую команду «{currentTeam.name}»</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      on:click={() => isCreatingNewAgent = false}
+                      class="text-slate-400 hover:text-slate-200 text-sm cursor-pointer p-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label for="new-agent-name" class="block text-slate-300 font-medium mb-1">
+                        Название роли (Display Name):
+                      </label>
+                      <input
+                        id="new-agent-name"
+                        type="text"
+                        bind:value={newAgent.name}
+                        on:input={onNewAgentNameInput}
+                        placeholder="например: DevOps / SRE Engineer, Security Auditor..."
+                        class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 focus:outline-none focus:border-indigo-400 font-medium text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label for="new-agent-role" class="block text-slate-300 font-medium mb-1">
+                        Идентификатор роли (Role ID / Slug):
+                      </label>
+                      <input
+                        id="new-agent-role"
+                        type="text"
+                        bind:value={newAgent.role}
+                        placeholder="например: devops, security, data_engineer"
+                        class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400"
+                      />
+                    </div>
+                  </div>
+
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label for="new-agent-profile" class="block text-slate-300 font-medium mb-1">
+                        LLM Профиль:
+                      </label>
+                      <select
+                        id="new-agent-profile"
+                        bind:value={newAgent.llm_profile_id}
+                        class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-200 font-medium text-xs focus:outline-none focus:border-indigo-400 cursor-pointer"
+                      >
+                        <option value="">(По умолчанию)</option>
+                        {#each profiles as prof}
+                          <option value={prof.id}>{prof.name} ({prof.default_model})</option>
+                        {/each}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label for="new-agent-model" class="block text-slate-300 font-medium mb-1">
+                        Модель:
+                      </label>
+                      <input
+                        id="new-agent-model"
+                        type="text"
+                        bind:value={newAgent.model}
+                        placeholder="gpt-4o, claude-3-5-sonnet, deepseek-chat..."
+                        class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label for="new-agent-prompt" class="block text-slate-300 font-medium mb-1">
+                      System Prompt / Описание обязанностей роли:
+                    </label>
+                    <textarea
+                      id="new-agent-prompt"
+                      bind:value={newAgent.system_prompt}
+                      rows="3"
+                      placeholder="Опишите, какие задачи решает этот саб-агент, какой стек использует и как формулирует ответы..."
+                      class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-400 resize-none font-sans"
+                    ></textarea>
+                  </div>
+
+                  <div>
+                    <span class="block text-slate-300 font-medium mb-1.5">Разрешенные скилы (Tool Permissions):</span>
+                    <div class="flex flex-wrap gap-2">
+                      {#each allAvailableSkills as sk}
+                        {@const allowed = (newAgent.allowed_skills || []).includes(sk.id)}
+                        <button
+                          type="button"
+                          on:click={() => toggleSkillForNewAgent(sk.id)}
+                          class="px-2.5 py-1 rounded-md text-[11px] border transition flex items-center gap-1.5 cursor-pointer {allowed ? 'bg-violet-950/80 border-violet-600 text-violet-200 font-medium' : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-400'}"
+                          title={sk.desc}
+                        >
+                          <span>{allowed ? '✓' : '✗'}</span>
+                          <span>{sk.name}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  </div>
+
+                  <div class="pt-2 flex items-center justify-between border-t border-indigo-800/60">
+                    <button
+                      type="button"
+                      on:click={createAgentAndAddToTeam}
+                      class="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold transition text-xs shadow-md cursor-pointer flex items-center gap-1.5"
+                    >
+                      <span>✓</span>
+                      <span>Создать роль и включить в команду</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      on:click={() => isCreatingNewAgent = false}
+                      class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition cursor-pointer"
+                    >
+                      Отмена
+                    </button>
+                  </div>
+                </div>
+              {/if}
+
               <!-- Agents List & Skill Editing -->
               <div class="space-y-4">
-                <h3 class="font-bold text-sm text-slate-200 flex items-center justify-between">
-                  <span>Саб-агенты этой команды ({currentTeamMembers.length})</span>
-                  <span class="text-[11px] font-normal text-slate-400">Настройка промпта, модели и матрицы разрешенных инструментов</span>
-                </h3>
+                <div class="flex items-center justify-between">
+                  <div>
+                    <h3 class="font-bold text-sm text-slate-200 flex items-center gap-2">
+                      <span>Саб-агенты этой команды ({currentTeamMembers.length})</span>
+                    </h3>
+                    <p class="text-[11px] text-slate-400">Настройка промпта, модели, прав вызова инструментов и управление составом</p>
+                  </div>
+
+                  <button
+                    type="button"
+                    on:click={startCreateNewAgent}
+                    class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white text-xs font-semibold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    <span>➕</span>
+                    <span>Добавить новую роль</span>
+                  </button>
+                </div>
 
                 {#each currentTeamMembers as agent}
                   <div class="p-4 rounded-xl border border-slate-800 bg-slate-950/70 space-y-3">
@@ -929,12 +1247,39 @@
                           placeholder="Модель (e.g. gpt-4o)"
                           class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-[11px] font-mono text-slate-200 w-28 focus:outline-none focus:border-indigo-500"
                         />
+
                         <button
                           on:click={() => saveAgent(agent)}
                           class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium cursor-pointer"
+                          title="Сохранить настройки агента"
                         >
                           Сохранить
                         </button>
+
+                        <!-- Remove from Team Button -->
+                        {#if currentTeam.member_agent_ids?.length > 1}
+                          <button
+                            type="button"
+                            on:click={() => removeAgentFromTeam(agent.id)}
+                            class="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-amber-300 text-[11px] border border-slate-800 transition cursor-pointer flex items-center gap-1"
+                            title="Исключить эту роль из текущей команды"
+                          >
+                            <span>✕</span>
+                            <span>Из команды</span>
+                          </button>
+                        {/if}
+
+                        <!-- Delete Role Completely Button -->
+                        {#if allAgents.length > 1}
+                          <button
+                            type="button"
+                            on:click={() => deleteAgent(agent.id)}
+                            class="p-1 rounded hover:bg-rose-950/60 text-slate-500 hover:text-rose-400 text-xs transition cursor-pointer"
+                            title="Полностью удалить роль из системы"
+                          >
+                            🗑️
+                          </button>
+                        {/if}
                       </div>
                     </div>
 
@@ -999,6 +1344,51 @@
                     {/if}
                   </div>
                 {/each}
+
+                <!-- Available roles not currently in this team -->
+                {#if availableNotInTeam.length > 0}
+                  <div class="mt-6 pt-4 border-t border-slate-800 space-y-3">
+                    <div class="flex items-center justify-between">
+                      <span class="font-bold text-xs text-slate-400 flex items-center gap-1.5">
+                        <span>📦</span>
+                        <span>Другие доступные роли не в этой команде ({availableNotInTeam.length}):</span>
+                      </span>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {#each availableNotInTeam as otherAgent}
+                        <div class="p-3 rounded-xl border border-slate-800/80 bg-slate-950/40 flex items-center justify-between">
+                          <div>
+                            <div class="flex items-center gap-2">
+                              <span class="font-semibold text-xs text-slate-300">{otherAgent.name}</span>
+                              <span class="px-1.5 py-0.2 rounded text-[9px] uppercase font-mono bg-slate-900 text-slate-400 border border-slate-800">{otherAgent.role}</span>
+                            </div>
+                            <span class="text-[10px] text-slate-500 font-mono truncate block mt-0.5">{otherAgent.model}</span>
+                          </div>
+
+                          <div class="flex items-center gap-2">
+                            <button
+                              type="button"
+                              on:click={() => addAgentToTeam(otherAgent.id)}
+                              class="px-2.5 py-1 rounded bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 text-[11px] font-medium transition cursor-pointer"
+                              title="Включить эту роль в текущую команду"
+                            >
+                              + В команду
+                            </button>
+                            <button
+                              type="button"
+                              on:click={() => deleteAgent(otherAgent.id)}
+                              class="p-1 rounded hover:bg-rose-950/60 text-slate-500 hover:text-rose-400 text-xs transition cursor-pointer"
+                              title="Удалить роль из системы"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
+                  </div>
+                {/if}
               </div>
             {/if}
           </div>

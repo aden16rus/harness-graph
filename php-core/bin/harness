@@ -201,6 +201,36 @@ switch ($command) {
         echo json_encode(['ok' => true, 'agent' => $agent->toArray()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
         break;
 
+    case 'agents:delete':
+        $app->migrate();
+        $id = $nonOptionArgs[1] ?? $cliOptions['id'] ?? ($argv[2] ?? '');
+        if ($id !== '') {
+            $app->agentRepo->delete($id);
+            // Clean up deleted agent from team member lists
+            $teams = $app->teamRepo->findAll();
+            foreach ($teams as $t) {
+                $members = $t->memberAgentIds;
+                if (in_array($id, $members, true)) {
+                    $newMembers = array_values(array_filter($members, fn($m) => $m !== $id));
+                    $leadId = $t->leadAgentId;
+                    if ($leadId === $id && !empty($newMembers)) {
+                        $leadId = $newMembers[0];
+                    }
+                    $updTeam = new \Harness\Domain\Entity\Team(
+                        id: $t->id,
+                        projectId: $t->projectId,
+                        name: $t->name,
+                        leadAgentId: $leadId,
+                        memberAgentIds: $newMembers,
+                        createdAt: $t->createdAt
+                    );
+                    $app->teamRepo->save($updTeam);
+                }
+            }
+        }
+        echo json_encode(['ok' => true], JSON_UNESCAPED_SLASHES) . "\n";
+        break;
+
     case 'sessions:delete':
         $app->migrate();
         $id = $nonOptionArgs[1] ?? $cliOptions['id'] ?? ($argv[2] ?? '');

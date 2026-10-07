@@ -647,6 +647,21 @@ func main() {
 			return
 		}
 
+		if r.Method == http.MethodDelete {
+			id := r.URL.Query().Get("id")
+			if id == "" {
+				http.Error(w, "id query param required", http.StatusBadRequest)
+				return
+			}
+			out, err := runPHPCommand(cfg.PHPBin, cfg.PHPHarness, "agents:delete", id)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("PHP error: %v (%s)", err, string(out)), http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write(out)
+			return
+		}
+
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	})
 
