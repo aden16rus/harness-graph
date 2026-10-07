@@ -115,22 +115,37 @@
     </div>
   {/if}
 
-  <!-- Mini TODO Progress Pill -->
+  <!-- Mini TODO Progress Pill & Current Active Step -->
   {#if data?.todos && data.todos.length > 0}
+    {@const inProgressItem = data.todos.find(t => t.status === 'in_progress')}
+    {@const currentStep = inProgressItem || data.todos.find(t => t.status === 'pending')}
     {@const completed = data.todos.filter(t => t.status === 'completed').length}
     {@const inProg = data.todos.filter(t => t.status === 'in_progress').length}
     {@const total = data.todos.length}
-    <div class="my-1.5 p-1 px-2 rounded-lg bg-slate-950/80 border border-indigo-900/40 flex items-center justify-between text-[10px]">
-      <div class="flex items-center gap-1.5 font-medium">
-        <span>📋</span>
-        <span class="text-slate-300">TODO: {completed}/{total}</span>
-        {#if inProg > 0}
-          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
-        {/if}
+    <div class="my-1.5 p-1.5 rounded-lg bg-slate-950/90 border border-indigo-900/50 space-y-1 text-[10px]">
+      <div class="flex items-center justify-between font-medium">
+        <div class="flex items-center gap-1.5">
+          <span>📋</span>
+          <span class="text-slate-300">TODO: {completed}/{total}</span>
+          {#if inProg > 0}
+            <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
+          {/if}
+        </div>
+        <div class="w-14 bg-slate-800 h-1.5 rounded-full overflow-hidden">
+          <div class="bg-emerald-400 h-full rounded-full transition-all" style="width: {Math.round((completed / total) * 100)}%"></div>
+        </div>
       </div>
-      <div class="w-14 bg-slate-800 h-1.5 rounded-full overflow-hidden">
-        <div class="bg-emerald-400 h-full rounded-full transition-all" style="width: {Math.round((completed / total) * 100)}%"></div>
-      </div>
+
+      {#if currentStep}
+        <div class="flex items-start gap-1 p-1 rounded bg-indigo-950/50 border border-indigo-800/50 text-[10px] text-slate-200 leading-tight">
+          <span class="shrink-0 {currentStep.status === 'in_progress' ? 'text-indigo-400 font-bold animate-pulse' : 'text-slate-500'}">
+            {currentStep.status === 'in_progress' ? '►' : '•'}
+          </span>
+          <span class="truncate font-medium text-slate-100" title={currentStep.content}>
+            {currentStep.content}
+          </span>
+        </div>
+      {/if}
     </div>
   {/if}
 

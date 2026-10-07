@@ -10,7 +10,8 @@ final class SystemSettings
     public function __construct(
         public int $subagentMaxSteps = 15,
         public int $rootMaxSteps = 25,
-        public int $subagentMaxTokens = 50000,
+        public int $subagentMaxTokens = 100000,
+        public int $subagentContextTokens = 65536,
         public bool $loopProtectionEnabled = true,
         public int $loopDetectionThreshold = 3,
         public int $llmMaxRetries = 3,
@@ -44,7 +45,7 @@ final class SystemSettings
                         $v = (string)$row['value'];
                         if ($k === 'loop_protection_enabled') {
                             $data[$k] = filter_var($v, FILTER_VALIDATE_BOOLEAN);
-                        } elseif (in_array($k, ['subagent_max_steps', 'root_max_steps', 'subagent_max_tokens', 'loop_detection_threshold', 'llm_max_retries', 'llm_retry_delay_sec'], true)) {
+                        } elseif (in_array($k, ['subagent_max_steps', 'root_max_steps', 'subagent_max_tokens', 'subagent_context_tokens', 'loop_detection_threshold', 'llm_max_retries', 'llm_retry_delay_sec'], true)) {
                             $data[$k] = (int)$v;
                         } else {
                             $data[$k] = $v;
@@ -66,7 +67,11 @@ final class SystemSettings
 
         $subagentTokens = isset($data['subagent_max_tokens'])
             ? (int)$data['subagent_max_tokens']
-            : (int)(getenv('SUBAGENT_MAX_TOKENS') ?: 50000);
+            : (int)(getenv('SUBAGENT_MAX_TOKENS') ?: 100000);
+
+        $subagentContext = isset($data['subagent_context_tokens'])
+            ? (int)$data['subagent_context_tokens']
+            : (int)(getenv('SUBAGENT_CONTEXT_TOKENS') ?: 65536);
 
         $loopProt = isset($data['loop_protection_enabled'])
             ? (bool)$data['loop_protection_enabled']
@@ -94,6 +99,7 @@ final class SystemSettings
             subagentMaxSteps: max(1, $subagentSteps),
             rootMaxSteps: max(1, $rootSteps),
             subagentMaxTokens: max(0, $subagentTokens),
+            subagentContextTokens: max(1000, $subagentContext),
             loopProtectionEnabled: $loopProt,
             loopDetectionThreshold: max(2, $loopThresh),
             llmMaxRetries: max(0, $llmRetries),
@@ -107,7 +113,8 @@ final class SystemSettings
         return new self(
             subagentMaxSteps: max(1, (int)($data['subagent_max_steps'] ?? 15)),
             rootMaxSteps: max(1, (int)($data['root_max_steps'] ?? 25)),
-            subagentMaxTokens: max(0, (int)($data['subagent_max_tokens'] ?? 50000)),
+            subagentMaxTokens: max(0, (int)($data['subagent_max_tokens'] ?? 100000)),
+            subagentContextTokens: max(1000, (int)($data['subagent_context_tokens'] ?? 65536)),
             loopProtectionEnabled: isset($data['loop_protection_enabled']) ? (bool)$data['loop_protection_enabled'] : true,
             loopDetectionThreshold: max(2, (int)($data['loop_detection_threshold'] ?? 3)),
             llmMaxRetries: max(0, (int)($data['llm_max_retries'] ?? 3)),
@@ -122,6 +129,7 @@ final class SystemSettings
             'subagent_max_steps' => $this->subagentMaxSteps,
             'root_max_steps' => $this->rootMaxSteps,
             'subagent_max_tokens' => $this->subagentMaxTokens,
+            'subagent_context_tokens' => $this->subagentContextTokens,
             'loop_protection_enabled' => $this->loopProtectionEnabled,
             'loop_detection_threshold' => $this->loopDetectionThreshold,
             'llm_max_retries' => $this->llmMaxRetries,

@@ -41,7 +41,7 @@
     system_prompt: '',
     model: 'gpt-4o',
     temperature: 0.2,
-    token_limit: 8192,
+    token_limit: 65536,
     allowed_skills: ['read_file', 'write_file', 'list_dir'],
     llm_profile_id: '',
     allowed_sub_agent_ids: [],
@@ -63,7 +63,8 @@
   let systemSettings: any = {
     subagent_max_steps: 15,
     root_max_steps: 25,
-    subagent_max_tokens: 50000,
+    subagent_max_tokens: 100000,
+    subagent_context_tokens: 65536,
     loop_protection_enabled: true,
     loop_detection_threshold: 3,
     llm_max_retries: 3,
@@ -362,7 +363,7 @@
       system_prompt: '',
       model: activeProf?.default_model || 'gpt-4o',
       temperature: 0.2,
-      token_limit: 8192,
+      token_limit: 65536,
       allowed_skills: ['read_file', 'write_file', 'list_dir'],
       llm_profile_id: activeProfileId || '',
       allowed_sub_agent_ids: [],
@@ -610,6 +611,7 @@
         subagent_max_steps: Number(systemSettings.subagent_max_steps),
         root_max_steps: Number(systemSettings.root_max_steps),
         subagent_max_tokens: Number(systemSettings.subagent_max_tokens),
+        subagent_context_tokens: Number(systemSettings.subagent_context_tokens || 65536),
         loop_protection_enabled: Boolean(systemSettings.loop_protection_enabled),
         loop_detection_threshold: Number(systemSettings.loop_detection_threshold),
         llm_max_retries: Number(systemSettings.llm_max_retries),
@@ -632,6 +634,7 @@
       subagent_max_steps: Number(systemSettings.subagent_max_steps),
       root_max_steps: Number(systemSettings.root_max_steps),
       subagent_max_tokens: Number(systemSettings.subagent_max_tokens),
+      subagent_context_tokens: Number(systemSettings.subagent_context_tokens || 65536),
       loop_protection_enabled: Boolean(systemSettings.loop_protection_enabled),
       loop_detection_threshold: Number(systemSettings.loop_detection_threshold),
       llm_max_retries: Number(systemSettings.llm_max_retries),
@@ -1277,6 +1280,8 @@
                           class="bg-slate-900 border border-slate-800 rounded px-2 py-1 text-[11px] font-mono text-slate-200 w-28 focus:outline-none focus:border-indigo-500"
                         />
 
+
+
                         <button
                           on:click={() => saveAgent(agent)}
                           class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-medium cursor-pointer"
@@ -1602,23 +1607,45 @@
                   </p>
                 </div>
 
+                <!-- Setting 1: Context Window Compaction Threshold -->
                 <div>
-                  <label for="subagent-tokens-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
-                    <span class="text-indigo-400 font-semibold">Лимит токенов сабагента:</span>
-                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{Number(systemSettings.subagent_max_tokens).toLocaleString()} токенов</span>
+                  <label for="subagent-context-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                    <span class="text-indigo-400 font-semibold">Лимит контекстного окна (Context Window Limit):</span>
+                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{Number(systemSettings.subagent_context_tokens || 65536).toLocaleString()} токенов</span>
                   </label>
                   <input
-                    id="subagent-tokens-input"
+                    id="subagent-context-input"
                     type="number"
-                    min="1000"
-                    step="5000"
-                    max="500000"
+                    min="4096"
+                    step="4096"
+                    max="1000000"
+                    bind:value={systemSettings.subagent_context_tokens}
+                    on:blur={handleAutoSaveSystemSettings}
+                    class="w-full bg-slate-950 border border-indigo-700/60 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400 ring-1 ring-indigo-500/20"
+                  />
+                  <p class="text-[10px] text-slate-500 mt-1">
+                    Размер истории запроса саб-агента, по превышению которого выполняется интеллектуальная компактизация контекста без потери файлов и статусов.
+                  </p>
+                </div>
+
+                <!-- Setting 2: Total Execution Budget Limit -->
+                <div>
+                  <label for="subagent-budget-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                    <span class="text-indigo-400 font-semibold">Максимальный бюджет токенов на выполнение (Total Budget):</span>
+                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{Number(systemSettings.subagent_max_tokens || 100000).toLocaleString()} токенов</span>
+                  </label>
+                  <input
+                    id="subagent-budget-input"
+                    type="number"
+                    min="5000"
+                    step="10000"
+                    max="2000000"
                     bind:value={systemSettings.subagent_max_tokens}
                     on:blur={handleAutoSaveSystemSettings}
                     class="w-full bg-slate-950 border border-indigo-700/60 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400 ring-1 ring-indigo-500/20"
                   />
                   <p class="text-[10px] text-slate-500 mt-1">
-                    Максимальный бюджет токенов (Prompt + Completion) на одно выполнение саб-агента. Предотвращает неконтролируемый перерасход бюджета.
+                    Суммарный лимит расхода токенов (Prompt + Completion) на все шаги работы саб-агента. Предотвращает неконтролируемый перерасход бюджета API.
                   </p>
                 </div>
 

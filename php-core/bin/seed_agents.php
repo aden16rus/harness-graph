@@ -58,7 +58,7 @@ $agents = [
 
 $insAgent = $pdo->prepare("
     INSERT INTO agents (id, name, role, system_prompt, model, temperature, token_limit, allowed_skills, allowed_sub_agent_ids, created_at)
-    VALUES (:id, :name, :role, :prompt, :model, 0.2, 8192, :skills, :sub_agents, :created)
+    VALUES (:id, :name, :role, :prompt, :model, 0.2, 65536, :skills, :sub_agents, :created)
     ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         role = excluded.role,

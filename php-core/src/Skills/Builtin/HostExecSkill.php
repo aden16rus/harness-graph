@@ -16,7 +16,7 @@ final class HostExecSkill implements SkillInterface
 
     public function getDescription(): string
     {
-        return 'Executes shell commands directly within the agent environment in workspace directory.';
+        return 'Executes shell commands directly within the agent environment in workspace directory, with output line limit and tail options.';
     }
 
     public function getParametersSchema(): array
@@ -27,6 +27,16 @@ final class HostExecSkill implements SkillInterface
                 'command' => [
                     'type' => 'string',
                     'description' => 'Shell command string to execute (e.g. "git status" or "composer validate").',
+                ],
+                'max_lines' => [
+                    'type' => 'integer',
+                    'description' => 'Maximum number of output lines to return (optional, defaults to 150). Prevents context overflow on verbose commands.',
+                    'default' => 150,
+                ],
+                'tail' => [
+                    'type' => 'boolean',
+                    'description' => 'If true, returns the last max_lines (tail) of output instead of head/middle (optional, defaults to false).',
+                    'default' => false,
                 ],
                 'timeout_ms' => [
                     'type' => 'integer',
@@ -46,6 +56,8 @@ final class HostExecSkill implements SkillInterface
         }
 
         $timeoutMs = (int)($params['timeout_ms'] ?? 60000);
+        $maxLines = max(10, (int)($params['max_lines'] ?? 150));
+        $tail = (bool)($params['tail'] ?? false);
 
         try {
             $resp = $context->ipcClient->execLocal([$command], $context->project->workspacePath, $timeoutMs);
@@ -58,12 +70,17 @@ final class HostExecSkill implements SkillInterface
         $stderr = (string)($resp['stderr'] ?? '');
         $duration = (int)($resp['duration_ms'] ?? 0);
 
-        $output = "Exit Code: {$exitCode} | Duration: {$duration}ms\n";
+        $output = "Exit Code: {$exitCode} | Duration: {$duration}ms
+";
         if ($stdout !== '') {
-            $output .= "--- STDOUT ---\n" . $stdout . "\n";
+            $output .= "--- STDOUT ---
+" . $this->truncateLines($stdout, $maxLines, $tail) . "
+";
         }
         if ($stderr !== '') {
-            $output .= "--- STDERR ---\n" . $stderr . "\n";
+            $output .= "--- STDERR ---
+" . $this->truncateLines($stderr, $maxLines, $tail) . "
+";
         }
 
         if ($exitCode !== 0) {
@@ -71,5 +88,43 @@ final class HostExecSkill implements SkillInterface
         }
 
         return SkillResult::ok($output, ['exit_code' => $exitCode, 'duration_ms' => $duration]);
+    }
+
+    private function truncateLines(string $text, int $maxLines, bool $tail): string
+    {
+        $lines = explode("
+", rtrim($text, "
+"));
+        $total = count($lines);
+        if ($total <= $maxLines) {
+            return $text;
+        }
+
+        if ($tail) {
+            $kept = array_slice($lines, -$maxLines);
+            $omitted = $total - $maxLines;
+            return "[... truncated {$omitted} earlier lines; showing last {$maxLines} of {$total} lines ...]
+" . implode("
+", $kept);
+        }
+
+        if ($maxLines >= 20) {
+            $headCount = (int)floor($maxLines * 0.7);
+            $tailCount = $maxLines - $headCount;
+            $head = array_slice($lines, 0, $headCount);
+            $tailLines = array_slice($lines, -$tailCount);
+            $omitted = $total - $maxLines;
+            return implode("
+", $head) . "
+[... truncated {$omitted} intermediate lines of total {$total} ...]
+" . implode("
+", $tailLines);
+        }
+
+        $head = array_slice($lines, 0, $maxLines);
+        $omitted = $total - $maxLines;
+        return implode("
+", $head) . "
+[... truncated {$omitted} remaining lines of total {$total} ...]";
     }
 }

@@ -136,6 +136,7 @@ type SystemSettings struct {
 	SubAgentMaxSteps       int    `json:"subagent_max_steps"`
 	RootMaxSteps           int    `json:"root_max_steps"`
 	SubAgentMaxTokens      int    `json:"subagent_max_tokens"`
+	SubAgentContextTokens  int    `json:"subagent_context_tokens"`
 	LoopProtectionEnabled  bool   `json:"loop_protection_enabled"`
 	LoopDetectionThreshold int    `json:"loop_detection_threshold"`
 	LLMMaxRetries          int    `json:"llm_max_retries"`
@@ -156,7 +157,8 @@ func newSystemSettingsStore(dataDir string, cfg *config.Config) *SystemSettingsS
 		Settings: SystemSettings{
 			SubAgentMaxSteps:       15,
 			RootMaxSteps:           25,
-			SubAgentMaxTokens:      50000,
+			SubAgentMaxTokens:      100000,
+			SubAgentContextTokens:  65536,
 			LoopProtectionEnabled:  true,
 			LoopDetectionThreshold: 3,
 			LLMMaxRetries:          3,
@@ -176,6 +178,11 @@ func newSystemSettingsStore(dataDir string, cfg *config.Config) *SystemSettingsS
 			}
 			if loaded.SubAgentMaxTokens >= 0 {
 				store.Settings.SubAgentMaxTokens = loaded.SubAgentMaxTokens
+			}
+			if loaded.SubAgentContextTokens > 0 {
+				store.Settings.SubAgentContextTokens = loaded.SubAgentContextTokens
+			} else {
+				store.Settings.SubAgentContextTokens = 65536
 			}
 			store.Settings.LoopProtectionEnabled = loaded.LoopProtectionEnabled
 			if loaded.LoopDetectionThreshold >= 2 {
@@ -385,6 +392,9 @@ func main() {
 			}
 			if newSettings.SubAgentMaxSteps <= 0 {
 				newSettings.SubAgentMaxSteps = 15
+			}
+			if newSettings.SubAgentContextTokens <= 0 {
+				newSettings.SubAgentContextTokens = 65536
 			}
 			if newSettings.RootMaxSteps <= 0 {
 				newSettings.RootMaxSteps = 25

@@ -112,6 +112,120 @@
     }
     return null;
   }
+  function getCommandString(args: any): string {
+    if (!args) return '';
+    if (args.command) return String(args.command);
+    if (args.cmd) {
+      if (Array.isArray(args.cmd)) return args.cmd.join(' ');
+      if (typeof args.cmd === 'object') return Object.values(args.cmd).join(' ');
+      return String(args.cmd);
+    }
+    return '';
+  }
+
+  function getCleanTerminalOutput(output: string): { stdout: string; stderr: string; exitCode?: number } {
+    if (!output) return { stdout: '', stderr: '' };
+    let stdout = '';
+    let stderr = '';
+    let exitCode: number | undefined;
+
+    const exitMatch = output.match(/Exit Code:\s*(\d+)/i);
+    if (exitMatch) {
+      exitCode = parseInt(exitMatch[1], 10);
+    }
+
+    if (output.includes('--- STDOUT ---') || output.includes('--- STDERR ---')) {
+      const stdoutMatch = output.match(/--- STDOUT ---\n([\s\S]*?)(?=--- STDERR ---|$)/);
+      if (stdoutMatch) {
+        stdout = stdoutMatch[1].trimEnd();
+      }
+      const stderrMatch = output.match(/--- STDERR ---\n([\s\S]*?)$/);
+      if (stderrMatch) {
+        stderr = stderrMatch[1].trimEnd();
+      }
+    } else {
+      stdout = output.trim();
+    }
+
+    return { stdout, stderr, exitCode };
+  }
+
+  function parseListDirOutput(output: string): { dir: string; items: { type: 'dir' | 'file'; name: string; size?: string }[] } {
+    if (!output) return { dir: '', items: [] };
+    const lines = output.split('\n');
+    let dir = '';
+    const items: { type: 'dir' | 'file'; name: string; size?: string }[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('Directory listing for')) {
+        dir = trimmed.replace('Directory listing for', '').replace(':', '').trim() || '.';
+        continue;
+      }
+      if (trimmed.startsWith('[DIR]')) {
+        const parts = trimmed.substring(5).trim().split(/\s+/);
+        if (parts[0]) items.push({ type: 'dir', name: parts[0] });
+      } else if (trimmed.startsWith('[FILE]')) {
+        const rest = trimmed.substring(6).trim();
+        const match = rest.match(/^(\S+)\s+(.+)$/);
+        if (match) {
+          items.push({ type: 'file', name: match[1], size: match[2] });
+        } else if (rest) {
+          items.push({ type: 'file', name: rest });
+        }
+      }
+    }
+    return { dir, items };
+  }
+
+  function parseReadFileLines(output: string): { header: string; lines: { num: number; code: string }[]; footer?: string } {
+    if (!output) return { header: '', lines: [] };
+    const rawLines = output.split('\n');
+    let header = '';
+    let footer = '';
+    const lines: { num: number; code: string }[] = [];
+
+    for (const line of rawLines) {
+      if (line.startsWith('--- File:')) {
+        header = line.replace(/^-+\s*|\s*-+$/g, '');
+        continue;
+      }
+      if (line.startsWith('[... ') && line.includes('more lines')) {
+        footer = line;
+        continue;
+      }
+      const match = line.match(/^\s*(\d+)\s*\|\s?(.*)$/);
+      if (match) {
+        lines.push({ num: parseInt(match[1], 10), code: match[2] });
+      } else if (line.trim() !== '') {
+        lines.push({ num: lines.length + 1, code: line });
+      }
+    }
+    return { header, lines, footer };
+  }
+
+  function getTodoItemsFromMessage(msg: any): { content: string; status: 'completed' | 'in_progress' | 'pending' }[] {
+    if (msg.args && Array.isArray(msg.args.todos) && msg.args.todos.length > 0) {
+      return msg.args.todos.map((t: any) => ({
+        content: t.content || t.task || '',
+        status: t.status || 'pending',
+      }));
+    }
+    const items: any[] = [];
+    const text = msg.output || msg.text || '';
+    const lines = text.split('\n');
+    for (const l of lines) {
+      const trimmed = l.trim();
+      if (trimmed.includes('[COMPLETED]')) {
+        items.push({ content: trimmed.replace(/.*\[COMPLETED\]\s*/, ''), status: 'completed' });
+      } else if (trimmed.includes('[IN_PROGRESS]')) {
+        items.push({ content: trimmed.replace(/.*\[IN_PROGRESS\]\s*/, ''), status: 'in_progress' });
+      } else if (trimmed.includes('[PENDING]')) {
+        items.push({ content: trimmed.replace(/.*\[PENDING\]\s*/, ''), status: 'pending' });
+      }
+    }
+    return items;
+  }
 </script>
 
 <aside class="w-full border-l border-slate-800 bg-slate-900/95 flex flex-col h-full shadow-2xl backdrop-blur select-none z-10 text-slate-100">
@@ -347,8 +461,11 @@
               </details>
 
             {:else if msg.role === 'tool'}
-              <!-- Skill Execution Card: Collapsed by Default -->
-              <details class="group rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs select-text transition">
+              <!-- Dedicated Rich Skill Card (Auto-open if running or recent) -->
+              {@const isRunning = msg.status === 'running'}
+              {@const isOpen = isRunning || idx >= currentNode.dialog.length - 2}
+              <details open={isOpen} class="group rounded-xl border border-slate-800 bg-slate-950/80 p-3 text-xs select-text transition shadow-sm">
+                <!-- Summary Title Bar -->
                 <summary class="cursor-pointer list-none flex items-center justify-between">
                   <div class="flex items-center gap-2 flex-1 min-w-0 mr-2">
                     {#if stepLabel}
@@ -358,39 +475,240 @@
                     <span class="font-mono font-bold text-violet-400 truncate">
                       {msg.name || 'tool'}
                     </span>
-                    {#if msg.args}
-                      <span class="text-[11px] text-slate-500 font-mono truncate max-w-[140px] hidden sm:inline">
-                        {getArgsPreview(msg.args)}
+                    {#if msg.args?.path}
+                      <span class="text-[11px] text-slate-400 font-mono truncate max-w-[200px]">
+                        {msg.args.path}
+                      </span>
+                    {:else if msg.args?.command || msg.args?.cmd}
+                      <span class="text-[11px] text-slate-400 font-mono truncate max-w-[200px]">
+                        $ {getCommandString(msg.args)}
+                      </span>
+                    {:else if msg.args?.agent_role}
+                      <span class="text-[11px] text-indigo-300 font-medium truncate max-w-[160px]">
+                        → {msg.args.agent_role}
                       </span>
                     {/if}
                   </div>
 
                   <div class="flex items-center gap-2 shrink-0">
-                    {#if msg.durationMs}
+                    {#if isRunning}
+                      <span class="flex items-center gap-1 text-[10px] text-amber-400 font-mono">
+                        <span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span>
+                        <span>Выполняется...</span>
+                      </span>
+                    {:else if msg.durationMs}
                       <span class="text-[10px] font-mono text-slate-500">
                         {msg.durationMs}ms
                       </span>
                     {/if}
-                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded {msg.status === 'ok' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/50' : msg.status === 'running' ? 'bg-amber-950 text-amber-400 animate-pulse border border-amber-800/50' : 'bg-rose-950 text-rose-400 border border-rose-800/50'}">
-                      {(msg.status || 'OK').toUpperCase()}
+                    <span class="text-[10px] font-mono px-1.5 py-0.5 rounded {msg.status === 'ok' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/50' : isRunning ? 'bg-amber-950 text-amber-400 border border-amber-800/50' : 'bg-rose-950 text-rose-400 border border-rose-800/50'}">
+                      {isRunning ? 'RUNNING' : (msg.status || 'OK').toUpperCase()}
                     </span>
                     <span class="text-slate-500 group-open:rotate-180 transition-transform text-[11px]">▼</span>
                   </div>
                 </summary>
 
-                <!-- Expanded Tool Details -->
-                <div class="mt-3 pt-2.5 border-t border-slate-800/80 space-y-2">
-                  {#if msg.args && Object.keys(msg.args).length > 0}
+                <!-- Dedicated Body Views by Tool Type -->
+                <div class="mt-3 pt-2.5 border-t border-slate-800/80 space-y-2.5">
+                  {#if msg.name === 'write_file'}
+                    <!-- 1. File Writing View: Formatted Code Content -->
+                    <div class="space-y-1.5">
+                      <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800">
+                        <span class="text-emerald-400 font-bold">📄 {msg.args?.path || 'file'}</span>
+                        <span class="text-slate-500">{msg.args?.content ? msg.args.content.length : 0} символов</span>
+                      </div>
+                      {#if msg.args?.content}
+                        <div class="rounded-lg bg-slate-950 border border-slate-800 p-2.5 font-mono text-[11px] text-emerald-300 max-h-64 overflow-y-auto whitespace-pre-wrap select-text leading-relaxed">
+                          {msg.args.content}
+                        </div>
+                      {/if}
+                      <div class="text-[11px] font-mono font-medium flex items-center gap-1.5 {msg.error ? 'text-rose-400' : 'text-emerald-400'}">
+                        <span>{msg.error ? '❌' : '✓'}</span>
+                        <span>{msg.error || msg.output || 'Файл успешно сохранен'}</span>
+                      </div>
+                    </div>
+
+                  {:else if msg.name === 'host_exec' || msg.name === 'docker_exec'}
+                    <!-- 2. Terminal View for Shell / Docker Commands -->
+                    {@const term = getCleanTerminalOutput(msg.output || msg.text || '')}
+                    <div class="rounded-lg overflow-hidden border border-slate-800 bg-black font-mono shadow-md">
+                      <div class="bg-slate-900/90 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[10px]">
+                        <div class="flex items-center gap-2">
+                          <div class="flex items-center gap-1">
+                            <span class="w-2.5 h-2.5 rounded-full bg-rose-500/80"></span>
+                            <span class="w-2.5 h-2.5 rounded-full bg-amber-500/80"></span>
+                            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500/80"></span>
+                          </div>
+                          <span class="text-slate-400 font-semibold">{msg.name === 'docker_exec' ? '🐳 docker: ' + (msg.args?.container || 'default') : '💻 host: /workspace'}</span>
+                        </div>
+                        {#if term.exitCode !== undefined}
+                          <span class="px-1.5 py-0.2 rounded font-mono text-[9px] {term.exitCode === 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
+                            Exit: {term.exitCode}
+                          </span>
+                        {/if}
+                      </div>
+
+                      <div class="p-3 text-[11px] select-text">
+                        <div class="flex items-center gap-2 text-indigo-400 font-bold mb-1.5">
+                          <span>$</span>
+                          <span class="text-slate-100">{getCommandString(msg.args)}</span>
+                        </div>
+
+                        {#if isRunning}
+                          <div class="text-amber-400 font-mono text-[11px] py-2 flex items-center gap-2 animate-pulse">
+                            <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+                            <span>Выполнение команды в терминале...</span>
+                          </div>
+                        {:else}
+                          {#if term.stdout}
+                            <pre class="text-slate-200 whitespace-pre-wrap max-h-64 overflow-y-auto leading-relaxed">{term.stdout}</pre>
+                          {/if}
+                          {#if term.stderr}
+                            <pre class="text-rose-400 whitespace-pre-wrap max-h-48 overflow-y-auto leading-relaxed mt-2 pt-2 border-t border-rose-950/40">{term.stderr}</pre>
+                          {/if}
+                          {#if !term.stdout && !term.stderr}
+                            <div class="text-slate-500 italic text-[10px]">Команда выполнена (без вывода в консоль).</div>
+                          {/if}
+                        {/if}
+                      </div>
+                    </div>
+
+                  {:else if msg.name === 'call_sub_agent'}
+                    <!-- 3. Sub-Agent Delegation Card -->
+                    <div class="space-y-2">
+                      <div class="flex items-center gap-2 bg-indigo-950/50 p-2 rounded-lg border border-indigo-800/60">
+                        <span class="text-base">🤖</span>
+                        <div class="truncate">
+                          <span class="text-[10px] text-indigo-400 uppercase font-bold tracking-wider block">Делегирование саб-агенту:</span>
+                          <span class="text-xs font-semibold text-slate-100">{msg.args?.agent_role || msg.args?.role || 'Sub-Agent'}</span>
+                        </div>
+                      </div>
+
+                      {#if msg.args?.task || msg.args?.task_instructions}
+                        <div class="space-y-1">
+                          <span class="text-[9px] uppercase font-bold text-slate-400 tracking-wider">📝 Текст задачи (Task Prompt):</span>
+                          <div class="p-2.5 rounded-lg bg-indigo-950/30 border border-indigo-900/40 text-indigo-100 text-xs whitespace-pre-wrap leading-relaxed select-text font-sans">
+                            {msg.args.task || msg.args.task_instructions}
+                          </div>
+                        </div>
+                      {/if}
+
+                      <div class="space-y-1">
+                        <span class="text-[9px] uppercase font-bold text-slate-400 tracking-wider">🏁 Результат работы саб-агента:</span>
+                        {#if isRunning}
+                          <div class="p-2 text-amber-400 animate-pulse text-xs">Саб-агент выполняет подзадачу...</div>
+                        {:else}
+                          <div class="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-slate-200 text-xs whitespace-pre-wrap leading-relaxed select-text max-h-72 overflow-y-auto font-sans">
+                            {msg.output || msg.text || msg.error || 'OK'}
+                          </div>
+                        {/if}
+                      </div>
+                    </div>
+
+                  {:else if msg.name === 'list_dir'}
+                    <!-- 4. Directory Listing File Tree / Grid -->
+                    {@const dirData = parseListDirOutput(msg.output || msg.text || '')}
+                    <div class="space-y-1.5">
+                      <div class="text-[11px] font-mono text-cyan-400 font-semibold bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800">
+                        📁 Директория: {msg.args?.path || '.'}
+                      </div>
+                      {#if isRunning}
+                        <div class="text-amber-400 animate-pulse text-xs py-2">Чтение файловой структуры...</div>
+                      {:else if dirData.items.length > 0}
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-64 overflow-y-auto p-1 bg-slate-900/40 rounded-lg border border-slate-800">
+                          {#each dirData.items as item}
+                            <div class="flex items-center justify-between p-1.5 rounded bg-slate-950/70 border border-slate-800/60 text-xs">
+                              <div class="flex items-center gap-1.5 truncate">
+                                <span>{item.type === 'dir' ? '📁' : '📄'}</span>
+                                <span class="{item.type === 'dir' ? 'text-cyan-300 font-semibold' : 'text-slate-200 font-mono'} truncate">{item.name}</span>
+                              </div>
+                              {#if item.size}
+                                <span class="text-[10px] text-slate-400 font-mono shrink-0 ml-1">{item.size}</span>
+                              {/if}
+                            </div>
+                          {/each}
+                        </div>
+                      {:else}
+                        <pre class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[11px] text-slate-300 max-h-48 overflow-y-auto">{msg.output || msg.text || 'Каталог пуст.'}</pre>
+                      {/if}
+                    </div>
+
+                  {:else if msg.name === 'read_file'}
+                    <!-- 5. Formatted File Reading with Real Line Numbers -->
+                    {@const readData = parseReadFileLines(msg.output || msg.text || '')}
+                    <div class="space-y-1.5">
+                      <div class="text-[11px] font-mono text-cyan-400 font-semibold bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800 flex items-center justify-between">
+                        <span>📄 {msg.args?.path || 'file'}</span>
+                        {#if msg.args?.start_line}
+                          <span class="text-[10px] text-slate-400">строки {msg.args.start_line}–{msg.args.end_line || ''}</span>
+                        {/if}
+                      </div>
+
+                      {#if isRunning}
+                        <div class="text-amber-400 animate-pulse text-xs py-2">Чтение файла...</div>
+                      {:else if readData.lines.length > 0}
+                        <div class="rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] max-h-72 overflow-y-auto p-2 select-text leading-relaxed">
+                          {#each readData.lines as line}
+                            <div class="flex items-start gap-2.5 hover:bg-slate-900/50 rounded px-1">
+                              <span class="w-9 text-right text-slate-500 select-none shrink-0 font-mono text-[10px]">{line.num}</span>
+                              <span class="text-slate-200 whitespace-pre font-mono flex-1">{line.code}</span>
+                            </div>
+                          {/each}
+                          {#if readData.footer}
+                            <div class="mt-2 pt-1 border-t border-slate-800 text-[10px] text-amber-400 font-mono">{readData.footer}</div>
+                          {/if}
+                        </div>
+                      {:else}
+                        <pre class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[11px] text-slate-300 max-h-48 overflow-y-auto">{msg.output || msg.text || 'Файл пуст.'}</pre>
+                      {/if}
+                    </div>
+
+                  {:else if msg.name === 'todo_write'}
+                    <!-- 6. Formatted TODO Checklist View -->
+                    {@const todoList = getTodoItemsFromMessage(msg)}
+                    <div class="space-y-1.5">
+                      <span class="text-[10px] font-bold text-indigo-400 uppercase tracking-wider block">📋 Список этапов (TODO Checklist):</span>
+                      {#if todoList.length > 0}
+                        <div class="space-y-1 bg-slate-900/50 p-2 rounded-lg border border-slate-800">
+                          {#each todoList as item}
+                            <div class="flex items-center gap-2 p-1.5 rounded bg-slate-950/80 border border-slate-800/60 text-xs">
+                              <span class="{item.status === 'completed' ? 'text-emerald-400' : item.status === 'in_progress' ? 'text-indigo-400 font-bold animate-pulse' : 'text-slate-500'} shrink-0 text-sm">
+                                {item.status === 'completed' ? '✓' : item.status === 'in_progress' ? '►' : '○'}
+                              </span>
+                              <span class="{item.status === 'completed' ? 'line-through text-slate-400' : item.status === 'in_progress' ? 'text-indigo-200 font-semibold' : 'text-slate-300'} flex-1 leading-snug">
+                                {item.content}
+                              </span>
+                              <span class="text-[9px] uppercase font-mono px-1.5 py-0.5 rounded shrink-0 {item.status === 'completed' ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800/50' : item.status === 'in_progress' ? 'bg-indigo-950/80 text-indigo-300 border border-indigo-700/60' : 'bg-slate-800 text-slate-400'}">
+                                {item.status}
+                              </span>
+                            </div>
+                          {/each}
+                        </div>
+                      {/if}
+                      {#if msg.args?.expected_outcome}
+                        <div class="p-2 rounded bg-indigo-950/30 border border-indigo-800/40 text-[11px] text-indigo-200">
+                          <span class="font-bold">Цель:</span> {msg.args.expected_outcome}
+                        </div>
+                      {/if}
+                    </div>
+
+                  {:else}
+                    <!-- 7. Fallback for other skills -->
                     <div>
-                      <span class="text-slate-500 font-semibold uppercase text-[9px] block">Параметры вызова (Arguments):</span>
-                      <pre class="bg-slate-900 p-2 rounded border border-slate-800/80 mt-1 font-mono text-[11px] text-slate-300 overflow-x-auto">{JSON.stringify(msg.args, null, 2)}</pre>
+                      <span class="text-slate-500 font-semibold uppercase text-[9px] block">{msg.error ? 'Ошибка (Error)' : 'Результат (Output)'}:</span>
+                      <pre class="p-2 rounded border mt-1 font-mono text-[11px] max-h-48 overflow-y-auto {msg.error ? 'bg-rose-950/40 border-rose-800 text-rose-300' : 'bg-slate-900/80 border-slate-800 text-slate-300'}">{msg.error || msg.output || msg.text || 'OK'}</pre>
                     </div>
                   {/if}
 
-                  <div>
-                    <span class="text-slate-500 font-semibold uppercase text-[9px] block">{msg.error ? 'Ошибка (Error)' : 'Результат (Output)'}:</span>
-                    <pre class="p-2 rounded border mt-1 font-mono text-[11px] max-h-48 overflow-y-auto {msg.error ? 'bg-rose-950/40 border-rose-800 text-rose-300' : 'bg-slate-900/80 border-slate-800 text-slate-300'}">{msg.error || msg.output || msg.text || 'OK'}</pre>
-                  </div>
+                  <!-- 8. Collapsible Parameters Spoiler for ALL tools -->
+                  {#if msg.args && Object.keys(msg.args).length > 0}
+                    <details class="mt-2 pt-1 border-t border-slate-800/60 text-[10px] text-slate-500">
+                      <summary class="cursor-pointer hover:text-slate-300 font-mono text-[9px] uppercase tracking-wider py-0.5 select-none">
+                        ▸ Исходные параметры вызова (JSON Arguments)
+                      </summary>
+                      <pre class="bg-slate-950 p-2 rounded border border-slate-800/80 mt-1 font-mono text-[10px] text-slate-400 overflow-x-auto leading-relaxed">{JSON.stringify(msg.args, null, 2)}</pre>
+                    </details>
+                  {/if}
                 </div>
               </details>
 

@@ -16,7 +16,7 @@ final class TodoWriteSkill implements SkillInterface
 
     public function getDescription(): string
     {
-        return 'Creates or updates the task TODO list and records the expected outcome for the current task. Must be called at the very beginning of the task to form the plan, and called throughout execution to mark stages as in_progress or completed so progress can be tracked in real-time.';
+        return 'Creates or updates the task TODO list and records the expected outcome for the current task. Call at the beginning to plan, and throughout execution to mark stages as in_progress or completed.';
     }
 
     public function getParametersSchema(): array
@@ -30,7 +30,7 @@ final class TodoWriteSkill implements SkillInterface
                 ],
                 'todos' => [
                     'type' => 'array',
-                    'description' => 'The complete list of todo items reflecting current progress.',
+                    'description' => 'The list of todo items reflecting current progress. Completed items must remain completed.',
                     'items' => [
                         'type' => 'object',
                         'properties' => [
@@ -61,10 +61,22 @@ final class TodoWriteSkill implements SkillInterface
             return SkillResult::fail('The todos array cannot be empty. Specify at least one step.');
         }
 
+        $node = $context->node;
+        // Map of previously completed items to protect against accidental wiping/amnesia
+        $previouslyCompleted = [];
+        if (!empty($node->todos)) {
+            foreach ($node->todos as $t) {
+                if (($t['status'] ?? '') === 'completed') {
+                    $key = $this->normalizeContentKey($t['content'] ?? '');
+                    if ($key !== '') {
+                        $previouslyCompleted[$key] = $t['content'];
+                    }
+                }
+            }
+        }
+
         $normalizedTodos = [];
-        $completedCount = 0;
-        $inProgressCount = 0;
-        $pendingCount = 0;
+        $seenKeys = [];
 
         foreach ($rawTodos as $item) {
             if (!is_array($item)) {
@@ -74,17 +86,17 @@ final class TodoWriteSkill implements SkillInterface
             if ($content === '') {
                 continue;
             }
+            $key = $this->normalizeContentKey($content);
+            $seenKeys[$key] = true;
+
             $status = strtolower(trim((string)($item['status'] ?? 'pending')));
             if (!in_array($status, ['pending', 'in_progress', 'completed'], true)) {
                 $status = 'pending';
             }
 
-            if ($status === 'completed') {
-                $completedCount++;
-            } elseif ($status === 'in_progress') {
-                $inProgressCount++;
-            } else {
-                $pendingCount++;
+            // Protect previously completed status if model accidentally demoted it
+            if ($status !== 'completed' && isset($previouslyCompleted[$key])) {
+                $status = 'completed';
             }
 
             $normalizedTodos[] = [
@@ -93,12 +105,36 @@ final class TodoWriteSkill implements SkillInterface
             ];
         }
 
+        // Preserve previously completed items that the model might have omitted
+        foreach ($previouslyCompleted as $key => $origContent) {
+            if (!isset($seenKeys[$key])) {
+                // Prepend or retain at beginning as completed
+                array_unshift($normalizedTodos, [
+                    'content' => $origContent,
+                    'status' => 'completed',
+                ]);
+            }
+        }
+
         if (empty($normalizedTodos)) {
             return SkillResult::fail('No valid todo items provided.');
         }
 
+        $completedCount = 0;
+        $inProgressCount = 0;
+        $pendingCount = 0;
+
+        foreach ($normalizedTodos as $item) {
+            if ($item['status'] === 'completed') {
+                $completedCount++;
+            } elseif ($item['status'] === 'in_progress') {
+                $inProgressCount++;
+            } else {
+                $pendingCount++;
+            }
+        }
+
         // Store on node entity
-        $node = $context->node;
         $node->todos = $normalizedTodos;
         if ($expectedOutcome !== '') {
             $node->expectedOutcome = $expectedOutcome;
@@ -114,17 +150,32 @@ final class TodoWriteSkill implements SkillInterface
         ]);
 
         $summary = sprintf(
-            "✓ TODO list updated: %d completed, %d in progress, %d pending (Total: %d).%s",
+            "✓ TODO list updated (%d completed, %d in_progress, %d pending of %d total):
+",
             $completedCount,
             $inProgressCount,
             $pendingCount,
-            count($normalizedTodos),
-            $node->expectedOutcome !== '' ? " Expected outcome: " . $node->expectedOutcome : ""
+            count($normalizedTodos)
         );
+        foreach ($normalizedTodos as $t) {
+            $marker = ($t['status'] === 'completed') ? '[COMPLETED]' : (($t['status'] === 'in_progress') ? '[IN_PROGRESS]' : '[PENDING]');
+            $summary .= "  " . $marker . " " . $t['content'] . "
+";
+        }
+        if ($node->expectedOutcome !== '') {
+            $summary .= "Expected outcome: " . $node->expectedOutcome . "
+";
+        }
 
-        return SkillResult::ok($summary, [
+        return SkillResult::ok(rtrim($summary), [
             'todos' => $normalizedTodos,
             'expected_outcome' => $node->expectedOutcome,
         ]);
+    }
+
+    private function normalizeContentKey(string $content): string
+    {
+        $normalized = mb_strtolower(trim($content));
+        return preg_replace('/[^\p{L}\p{N}]+/u', ' ', $normalized) ?: '';
     }
 }

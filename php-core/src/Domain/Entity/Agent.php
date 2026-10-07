@@ -16,7 +16,7 @@ final class Agent
         public string $systemPrompt,
         public string $model = 'gpt-4o',
         public float $temperature = 0.2,
-        public int $tokenLimit = 8192,
+        public int $tokenLimit = 65536,
         public array $allowedSkills = [],
         public ?string $llmProfileId = null,
         public array $allowedSubAgentIds = [],

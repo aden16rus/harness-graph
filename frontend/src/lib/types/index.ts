@@ -82,6 +82,7 @@ export interface SystemSettings {
   subagent_max_steps: number;
   root_max_steps: number;
   subagent_max_tokens: number;
+  subagent_context_tokens: number;
   loop_protection_enabled: boolean;
   loop_detection_threshold: number;
   llm_max_retries: number;

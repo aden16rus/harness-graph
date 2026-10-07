@@ -221,7 +221,7 @@ switch ($command) {
             systemPrompt: (string)($data['system_prompt'] ?? ''),
             model: (string)($data['model'] ?? 'gpt-4o'),
             temperature: (float)($data['temperature'] ?? 0.2),
-            tokenLimit: (int)($data['token_limit'] ?? 8192),
+            tokenLimit: (int)($data['token_limit'] ?? 65536),
             allowedSkills: (array)($data['allowed_skills'] ?? []),
             llmProfileId: !empty($data['llm_profile_id']) ? (string)$data['llm_profile_id'] : null,
             allowedSubAgentIds: (array)($data['allowed_sub_agent_ids'] ?? []),

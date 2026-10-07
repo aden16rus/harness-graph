@@ -177,10 +177,12 @@ final class ReActEngine
             ? ($this->settings?->subagentMaxSteps ?? 15)
             : ($this->settings?->rootMaxSteps ?? $this->maxSteps);
 
-        $subagentMaxTokens = $this->settings?->subagentMaxTokens ?? 50000;
+        $subagentMaxTokens = $this->settings?->subagentMaxTokens ?? 100000;
+        $subagentContextTokens = $this->settings?->subagentContextTokens ?? 65536;
         $loopProtectionEnabled = $this->settings?->loopProtectionEnabled ?? true;
         $loopThreshold = $this->settings?->loopDetectionThreshold ?? 3;
         $toolCallHistory = [];
+        $toolPathHistory = [];
 
         $step = $baseStep;
         $turnStep = 0;
@@ -190,8 +192,9 @@ final class ReActEngine
             $turnStep++;
             $step++;
 
-            // Fit context window if needed
-            $fittedMessages = $this->contextManager->fitContextWindow($history, $agent->tokenLimit);
+            // Separate context window limit (threshold for history compaction)
+            $effectiveContextLimit = $subagentContextTokens > 0 ? $subagentContextTokens : 65536;
+            $fittedMessages = $this->contextManager->fitContextWindow($history, $effectiveContextLimit);
 
             // Prepare messages payload for LLM
             $messagesPayload = array_map(static fn(Message $m) => $m->toArray(), $fittedMessages);
@@ -285,23 +288,74 @@ final class ReActEngine
                 'step' => $step,
             ]);
 
-            // Sub-agent token limit check
+            // Sub-agent token budget check: if budget exceeded, lock tool calls and demand full summary report
             $nodeTotalTokens = $node->promptTokens + $node->completionTokens;
             if ($isSubAgent && $subagentMaxTokens > 0 && $nodeTotalTokens >= $subagentMaxTokens) {
-                $tokenLimitError = "🛑 Превышен лимит токенов саб-агента: израсходовано {$nodeTotalTokens} токенов (установленный лимит: {$subagentMaxTokens}). Выполнение шагов прервано.";
+                $tokenLimitNotice = "🛑 Достигнут лимит бюджета токенов саб-агента (израсходовано {$nodeTotalTokens} из {$subagentMaxTokens} токенов). Дальнейшие вызовы инструментов заблокированы. Предоставьте исчерпывающий итоговый отчет:";
+
+                $budgetSummaryPrompt = $tokenLimitNotice . "\n"
+                    . "1. Что конкретно было ВЫПОЛНЕНО (созданные/измененные файлы, реализованные модули, проведенные тесты).\n"
+                    . "2. Что НЕ ВЫПОЛНЕНО или осталось недоделанным из запланированного.\n"
+                    . "3. Текущий статус пунктов TODO листа (выполненные, в процессе, не начатые).\n"
+                    . "4. Ожидаемый результат vs Фактический результат.\n"
+                    . "5. Четкие рекомендации для вызывающего агента или пользователя по завершению задачи.";
+
                 $this->ipcClient->publishEvent('graph.token_limit_exceeded', $session->id, $node->id, [
                     'tokens' => $nodeTotalTokens,
                     'limit' => $subagentMaxTokens,
                     'step' => $step,
-                    'message' => $tokenLimitError,
+                    'message' => $tokenLimitNotice,
                 ]);
+
                 $node->dialog[] = [
                     'role' => 'system',
                     'step' => $step,
-                    'text' => $tokenLimitError,
+                    'text' => $budgetSummaryPrompt,
                     'timestamp' => gmdate('Y-m-d H:i:s'),
                 ];
-                $finalAnswer = $tokenLimitError;
+
+                $history[] = Message::user($budgetSummaryPrompt);
+
+                // Dedicated final summarization LLM call with NO TOOLS ALLOWED
+                try {
+                    $fittedBudgetSummary = $this->contextManager->fitContextWindow($history, $effectiveContextLimit);
+                    $budgetSummaryPayload = array_map(static fn(Message $m) => $m->toArray(), $fittedBudgetSummary);
+
+                    $budgetChatReq = [
+                        'model' => $agent->model,
+                        'messages' => $budgetSummaryPayload,
+                        'tools' => null, // NO TOOLS ALLOWED - strictly summarization!
+                        'temperature' => $agent->temperature,
+                        'session_id' => $session->id,
+                        'node_id' => $node->id,
+                        'llm_profile_id' => $agent->llmProfileId,
+                    ];
+
+                    $summaryResp = $this->ipcClient->chatLlm($budgetChatReq);
+                    $pTokens = (int)($summaryResp['prompt_tokens'] ?? 0);
+                    $cTokens = (int)($summaryResp['completion_tokens'] ?? 0);
+                    $node->promptTokens += $pTokens;
+                    $node->completionTokens += $cTokens;
+                    $session->totalPromptTokens += $pTokens;
+                    $session->totalCompletionTokens += $cTokens;
+                    $this->sessionRepo->save($session);
+
+                    $summaryText = trim((string)($summaryResp['content'] ?? ''));
+                    if ($summaryText !== '') {
+                        $node->dialog[] = [
+                            'role' => 'assistant',
+                            'step' => $step,
+                            'text' => $summaryText,
+                            'timestamp' => gmdate('Y-m-d H:i:s'),
+                        ];
+                        $finalAnswer = $summaryText;
+                    } else {
+                        $finalAnswer = "🛑 Остановлено по исчерпанию бюджета токенов ({$nodeTotalTokens}/{$subagentMaxTokens}).";
+                    }
+                } catch (\Throwable) {
+                    $finalAnswer = "🛑 Остановлено по исчерпанию бюджета токенов ({$nodeTotalTokens}/{$subagentMaxTokens}).";
+                }
+
                 break;
             }
 
@@ -325,8 +379,8 @@ final class ReActEngine
                 ]);
             }
 
-            // Record assistant turn in node dialog
-            if ($content !== '') {
+            // Record assistant turn in node dialog (even if text is empty when calling tools)
+            if ($content !== '' || !empty($parsedToolCalls)) {
                 $node->dialog[] = [
                     'role' => 'assistant',
                     'step' => $step,
@@ -356,17 +410,32 @@ final class ReActEngine
                 break;
             }
 
+            // Detect if current role is an inspector/reviewer/QA whose core purpose is reading and auditing
+            $isInspectorRole = in_array(strtolower($agent->role), ['qa', 'techlead', 'backend_code_reviewer', 'frontend_code_reviewer'], true)
+                || str_contains(strtolower($agent->role), 'review')
+                || str_contains(strtolower($agent->role), 'qa')
+                || str_contains(strtolower($agent->role), 'test')
+                || str_contains(strtolower($agent->role), 'audit');
+
             // Anti-Loop Protection check when tools are called
             if ($loopProtectionEnabled && !empty($parsedToolCalls)) {
                 $turnSignatures = [];
+                $callPaths = [];
+
                 foreach ($parsedToolCalls as $tc) {
                     $argsJson = json_encode($tc->arguments, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                     $turnSignatures[] = $tc->name . ':' . md5((string)$argsJson);
+                    if (isset($tc->arguments['path']) && trim((string)$tc->arguments['path']) !== '') {
+                        $callPaths[] = $tc->name . ':' . trim((string)$tc->arguments['path']);
+                    }
                 }
                 $currentTurnSignature = implode('|', $turnSignatures);
                 $toolCallHistory[] = $currentTurnSignature;
+                if (!empty($callPaths)) {
+                    $toolPathHistory[] = implode('|', $callPaths);
+                }
 
-                // Check 1: Consecutive identical tool calls
+                // Check 1: Consecutive identical tool calls with identical arguments
                 $historyLen = count($toolCallHistory);
                 $consecutiveCount = 0;
                 for ($i = $historyLen - 1; $i >= 0; $i--) {
@@ -377,28 +446,56 @@ final class ReActEngine
                     }
                 }
 
-                // Check 2: Cycle detection (e.g. A -> B -> A -> B)
+                // Check 2: Multi-period cycle detection (periods P in 2..6)
                 $cycleDetected = false;
                 $cyclePeriod = 0;
-                if ($historyLen >= 4 && $historyLen >= $loopThreshold * 2) {
-                    $p2Matches = true;
-                    for ($k = 0; $k < $loopThreshold * 2; $k++) {
-                        if ($toolCallHistory[$historyLen - 1 - $k] !== $toolCallHistory[$historyLen - 1 - ($k % 2)]) {
-                            $p2Matches = false;
+                $maxPeriod = min(6, (int)floor($historyLen / $loopThreshold));
+                for ($p = 2; $p <= $maxPeriod; $p++) {
+                    $reqLen = $p * $loopThreshold;
+                    if ($historyLen >= $reqLen) {
+                        $pMatches = true;
+                        for ($k = 0; $k < $reqLen; $k++) {
+                            if ($toolCallHistory[$historyLen - 1 - $k] !== $toolCallHistory[$historyLen - 1 - ($k % $p)]) {
+                                $pMatches = false;
+                                break;
+                            }
+                        }
+                        if ($pMatches) {
+                            $cycleDetected = true;
+                            $cyclePeriod = $p;
                             break;
                         }
                     }
-                    if ($p2Matches && $toolCallHistory[$historyLen - 1] !== $toolCallHistory[$historyLen - 2]) {
-                        $cycleDetected = true;
-                        $cyclePeriod = 2;
+                }
+
+                // Check 3: Repeated inspection of the SAME path without changes
+                // If the agent reads DIFFERENT files or inspects different dirs, it is exploring, not looping!
+                $reReadingSamePath = false;
+                $repeatedPathName = '';
+                if (!empty($toolPathHistory) && count($toolPathHistory) >= 6) {
+                    $recentPaths = array_slice($toolPathHistory, -8);
+                    $pathCounts = array_count_values($recentPaths);
+                    foreach ($pathCounts as $pathKey => $pCount) {
+                        if ($pCount >= 4) {
+                            $reReadingSamePath = true;
+                            $repeatedPathName = $pathKey;
+                            break;
+                        }
                     }
                 }
 
-                if ($consecutiveCount >= $loopThreshold || $cycleDetected) {
+                // For inspector roles (QA, reviewer), reading different files is completely normal and never a loop.
+                $shouldTriggerLoop = ($consecutiveCount >= $loopThreshold) || $cycleDetected || ($reReadingSamePath && !$isInspectorRole);
+
+                if ($shouldTriggerLoop) {
                     $toolNamesList = implode(', ', array_map(fn($tc) => $tc->name, $parsedToolCalls));
-                    $loopReason = $cycleDetected
-                        ? "Обнаружен циклический паттерн вызова инструментов (период {$cyclePeriod}) {$loopThreshold} раз подряд."
-                        : "Инструмент(ы) [{$toolNamesList}] вызван(ы) с идентичными параметрами {$consecutiveCount} раз подряд без продвижения к решению.";
+                    if ($cycleDetected) {
+                        $loopReason = "Обнаружен циклический паттерн вызова инструментов (период {$cyclePeriod}) {$loopThreshold} раз подряд.";
+                    } elseif ($reReadingSamePath) {
+                        $loopReason = "Обнаружено зацикливание на многократном повторном чтении одного и того же пути [{$repeatedPathName}] 4+ раза подряд без продвижения вперед.";
+                    } else {
+                        $loopReason = "Инструмент(ы) [{$toolNamesList}] вызван(ы) с идентичными параметрами {$consecutiveCount} раз подряд без продвижения к решению.";
+                    }
 
                     $this->ipcClient->publishEvent('graph.loop_detected', $session->id, $node->id, [
                         'tools' => $toolNamesList,
@@ -534,7 +631,7 @@ final class ReActEngine
 
             // Execute a dedicated final summarization call without any tools allowed
             try {
-                $fittedSummaryMessages = $this->contextManager->fitContextWindow($history, $agent->tokenLimit);
+                $fittedSummaryMessages = $this->contextManager->fitContextWindow($history, $effectiveContextLimit);
                 $summaryMessagesPayload = array_map(static fn(Message $m) => $m->toArray(), $fittedSummaryMessages);
 
                 $summaryChatReq = [
