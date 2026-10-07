@@ -9,6 +9,11 @@ final class PermissionPolicy
 {
     public function isAllowed(Agent $agent, string $skillName): bool
     {
+        // todo_write is a mandatory cognitive planning tool universally available to all agents
+        if ($skillName === 'todo_write') {
+            return true;
+        }
+
         return $agent->allowsSkill($skillName);
     }
 

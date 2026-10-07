@@ -157,6 +157,8 @@ class WebSocketManager {
             startedAt: data.started_at || now,
             dialog: initialDialog,
             toolCalls: [],
+            todos: data.todos || [],
+            expectedOutcome: data.expected_outcome || '',
           };
           updated.set(newNode.id, newNode);
           selectedNodeId.update(current => current === null ? newNode.id : current);
@@ -387,6 +389,18 @@ class WebSocketManager {
           break;
         }
 
+        case 'graph.node_todos_updated': {
+          const node = updated.get(node_id);
+          if (node) {
+            updated.set(node_id, {
+              ...node,
+              todos: data.todos || node.todos || [],
+              expectedOutcome: data.expected_outcome !== undefined ? data.expected_outcome : (node.expectedOutcome || ''),
+            });
+          }
+          break;
+        }
+
         case 'graph.token_limit_exceeded': {
           const node = updated.get(node_id);
           if (node) {
@@ -571,7 +585,11 @@ export async function loadSessionGraph(sessionId: string): Promise<boolean> {
     // Populate nodesStore
     const newMap = new Map<string, AgentNodeData>();
     for (const node of data.nodes || []) {
-      newMap.set(node.id, node);
+      newMap.set(node.id, {
+        ...node,
+        todos: node.todos || [],
+        expectedOutcome: node.expected_outcome || node.expectedOutcome || '',
+      });
     }
     nodesStore.set(newMap);
 

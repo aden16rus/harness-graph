@@ -205,6 +205,13 @@ final class SettingsAndEngineTest
         );
 
         $mockIpc->chatResponses = array_fill(0, 20, $loopingToolResponse);
+        // Summarization turn response
+        $mockIpc->chatResponses[5] = [
+            'content' => '### Итоговый отчет: Все шаги выполнены, создано 2 файла, тесты пройдены.',
+            'tool_calls' => [],
+            'prompt_tokens' => 10,
+            'completion_tokens' => 20,
+        ];
         $mockIpc->chatCallCount = 0;
 
         $subNode = new ExecutionNode(
@@ -221,17 +228,23 @@ final class SettingsAndEngineTest
         $nodeRepo->save($subNode);
 
         $resSubNode = $engine->executeNode($subNode, $subagent, 'Sub task', $project, $session);
-        assert($mockIpc->chatCallCount === 5, "Subagent should execute exactly 5 steps (subagentMaxSteps), executed: {$mockIpc->chatCallCount}");
-        assert(str_contains($resSubNode->outputResult, '5'), "Subagent output should mention limit of 5: {$resSubNode->outputResult}");
-        echo "✓ Subagent step limit (subagent_max_steps = 5) passed\n";
+        assert($mockIpc->chatCallCount === 6, "Subagent should execute 5 tool steps + 1 summarization turn, executed: {$mockIpc->chatCallCount}");
+        assert(str_contains($resSubNode->outputResult, 'Итоговый отчет'), "Subagent output should contain summarization: {$resSubNode->outputResult}");
+        echo "✓ Subagent step limit & summarization instruction passed\n";
 
         // Check that dialog items have step numbers
         $stepsRecorded = array_filter($resSubNode->dialog, fn($d) => isset($d['step']) && $d['step'] > 0);
         assert(!empty($stepsRecorded), "Dialog should contain items with step > 0");
         echo "✓ Dialog step numbering recorded successfully\n";
 
-        // 2b. Test Root agent node (depth = 0): should stop at rootMaxSteps (10)
+        // 2b. Test Root agent node (depth = 0): should stop at rootMaxSteps (10) and summarize
         $mockIpc->chatResponses = array_fill(0, 20, $loopingToolResponse);
+        $mockIpc->chatResponses[10] = [
+            'content' => 'Root agent completed summary report.',
+            'tool_calls' => [],
+            'prompt_tokens' => 10,
+            'completion_tokens' => 20,
+        ];
         $mockIpc->chatCallCount = 0;
 
         $rootNode = new ExecutionNode(
@@ -248,8 +261,8 @@ final class SettingsAndEngineTest
         $nodeRepo->save($rootNode);
 
         $resRootNode = $engine->executeNode($rootNode, $rootAgent, 'Root task', $project, $session);
-        assert($mockIpc->chatCallCount === 10, "Root agent should execute exactly 10 steps (rootMaxSteps), executed: {$mockIpc->chatCallCount}");
-        echo "✓ Root agent step limit (root_max_steps = 10) passed\n";
+        assert($mockIpc->chatCallCount === 11, "Root agent should execute 10 tool steps + 1 summarization, executed: {$mockIpc->chatCallCount}");
+        echo "✓ Root agent step limit (root_max_steps = 10) & summarization passed\n";
 
         // 3. Test Anti-Loop Protection Mechanism
         $loopSettings = new SystemSettings(
@@ -459,7 +472,60 @@ final class SettingsAndEngineTest
         $builtPrompt = $promptContextMgr->buildSystemPrompt($rootAgent, $testProjectWithPrompt);
         assert(str_contains($builtPrompt, 'Always write secure, well-tested code.'), "Prompt should contain global prompt");
         assert(str_contains($builtPrompt, 'Strict PSR-12 and Clean Architecture conventions required.'), "Prompt should contain project prompt");
+        assert(str_contains($builtPrompt, 'todo_write'), "Prompt should mandate todo_write workflow");
         echo "✓ Global system prompt and project-level prompt injection passed\n";
+
+        // 8. Test TodoWriteSkill and real-time progress update
+        $todoSkill = new \Harness\Skills\Builtin\TodoWriteSkill();
+        $mockTodoIpc = new MockIpcClient();
+        $todoNode = new ExecutionNode(
+            id: 'node_todo_test',
+            sessionId: $session->id,
+            parentNodeId: null,
+            agentId: $subagent->id,
+            agentName: $subagent->name,
+            role: $subagent->role,
+            status: NodeStatus::ACTIVE,
+            depth: 1,
+            inputPrompt: 'Plan task'
+        );
+
+        $todoCtx = new \Harness\Skills\SkillExecutionContext(
+            project: $project,
+            session: $session,
+            node: $todoNode,
+            agent: $subagent,
+            ipcClient: $mockTodoIpc
+        );
+
+        $todoRes = $todoSkill->execute([
+            'expected_outcome' => 'Clean API implementation with 100% tests passing',
+            'todos' => [
+                ['content' => 'Analyze existing code', 'status' => 'completed'],
+                ['content' => 'Implement new endpoint', 'status' => 'in_progress'],
+                ['content' => 'Write unit tests', 'status' => 'pending'],
+            ],
+        ], $todoCtx);
+
+        assert($todoRes->success, "TodoWriteSkill should succeed");
+        assert(count($todoNode->todos) === 3, "Node should have 3 todos");
+        assert($todoNode->todos[0]['status'] === 'completed');
+        assert($todoNode->todos[1]['status'] === 'in_progress');
+        assert($todoNode->todos[2]['status'] === 'pending');
+        assert($todoNode->expectedOutcome === 'Clean API implementation with 100% tests passing');
+
+        $todoEvents = array_filter($mockTodoIpc->publishedEvents, fn($e) => $e['event'] === 'graph.node_todos_updated');
+        assert(count($todoEvents) === 1, "graph.node_todos_updated event should be emitted");
+        $eventData = reset($todoEvents)['data'];
+        assert($eventData['completed'] === 1 && $eventData['in_progress'] === 1 && $eventData['total'] === 3);
+
+        // Verify database persistence of todos and expected_outcome
+        $nodeRepo->save($todoNode);
+        $savedTodoNode = $nodeRepo->findById($todoNode->id);
+        assert($savedTodoNode !== null);
+        assert(count($savedTodoNode->todos) === 3, "Persisted node should retain 3 todos");
+        assert($savedTodoNode->expectedOutcome === 'Clean API implementation with 100% tests passing');
+        echo "✓ TodoWriteSkill, progress tracking and database persistence passed\n";
 
         echo "\n=======================================================\n";
         echo "ALL UNIT & INTEGRATION TESTS PASSED SUCCESSFULLY!\n";

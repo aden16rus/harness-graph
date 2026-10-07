@@ -27,6 +27,7 @@ use Harness\Skills\Builtin\HostExecSkill;
 use Harness\Skills\Builtin\ListDirectorySkill;
 use Harness\Skills\Builtin\ReadFileSkill;
 use Harness\Skills\Builtin\WriteFileSkill;
+use Harness\Skills\Builtin\TodoWriteSkill;
 use Harness\Skills\PermissionPolicy;
 use Harness\Skills\SkillRegistry;
 use PDO;
@@ -104,6 +105,7 @@ final class HarnessApp
         $this->skillRegistry->register(new AskHumanExpertSkill());
         $this->skillRegistry->register(new CallSubAgentSkill());
         $this->skillRegistry->register(new BrowseLinkSkill());
+        $this->skillRegistry->register(new TodoWriteSkill());
     }
 
     public function migrate(): void

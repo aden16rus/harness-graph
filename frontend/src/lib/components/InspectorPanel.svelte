@@ -168,6 +168,80 @@
           </span>
         </div>
       </div>
+
+      <!-- Task Plan & Real-time Progress (TODO List) -->
+      {#if (currentNode.todos && currentNode.todos.length > 0) || currentNode.expectedOutcome}
+        {@const completedCount = (currentNode.todos || []).filter(t => t.status === 'completed').length}
+        {@const inProgressCount = (currentNode.todos || []).filter(t => t.status === 'in_progress').length}
+        {@const totalTodos = (currentNode.todos || []).length}
+        {@const progressPercent = totalTodos > 0 ? Math.round((completedCount / totalTodos) * 100) : 0}
+
+        <div class="mt-3 p-3 rounded-xl bg-slate-900/90 border border-indigo-900/50 space-y-2.5 shadow-sm">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-1.5 font-bold text-xs text-indigo-300">
+              <span>📋</span>
+              <span>План задачи и прогресс (TODO)</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-[11px] font-mono font-semibold {completedCount === totalTodos && totalTodos > 0 ? 'text-emerald-400' : 'text-slate-300'}">
+                {completedCount}/{totalTodos} ({progressPercent}%)
+              </span>
+            </div>
+          </div>
+
+          <!-- Progress Bar -->
+          <div class="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+            <div
+              class="h-full transition-all duration-300 rounded-full {completedCount === totalTodos && totalTodos > 0 ? 'bg-emerald-500' : inProgressCount > 0 ? 'bg-indigo-500' : 'bg-slate-700'}"
+              style="width: {progressPercent}%"
+            ></div>
+          </div>
+
+          {#if currentNode.expectedOutcome}
+            <div class="p-2 rounded-lg bg-indigo-950/30 border border-indigo-800/40 text-[11px] text-slate-200">
+              <span class="text-[10px] uppercase font-bold text-indigo-400 block mb-0.5">🎯 Ожидаемый результат:</span>
+              <span class="leading-relaxed whitespace-pre-wrap">{currentNode.expectedOutcome}</span>
+            </div>
+          {/if}
+
+          <!-- Checklist Items -->
+          {#if totalTodos > 0}
+            <div class="space-y-1.5 pt-1 max-h-52 overflow-y-auto">
+              {#each currentNode.todos as item, idx}
+                <div class="flex items-start gap-2 p-2 rounded-lg text-xs transition border {item.status === 'completed' ? 'bg-emerald-950/20 border-emerald-900/40 text-slate-300' : item.status === 'in_progress' ? 'bg-indigo-950/40 border-indigo-700/60 text-slate-100 ring-1 ring-indigo-500/30 shadow-sm' : 'bg-slate-950/40 border-slate-800/70 text-slate-400'}">
+                  <!-- Status Indicator Icon -->
+                  <div class="mt-0.5 shrink-0">
+                    {#if item.status === 'completed'}
+                      <div class="w-4 h-4 rounded-full bg-emerald-500/20 border border-emerald-500/60 flex items-center justify-center text-[10px] text-emerald-400 font-bold">
+                        ✓
+                      </div>
+                    {:else if item.status === 'in_progress'}
+                      <div class="w-4 h-4 rounded-full bg-indigo-500/20 border border-indigo-500/60 flex items-center justify-center text-[9px] text-indigo-300 animate-pulse">
+                        ⏳
+                      </div>
+                    {:else}
+                      <div class="w-4 h-4 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-[10px] text-slate-500">
+                        ○
+                      </div>
+                    {/if}
+                  </div>
+
+                  <!-- Item Content & Badge -->
+                  <div class="flex-1 min-w-0 flex items-center justify-between gap-2">
+                    <span class="leading-snug break-words {item.status === 'completed' ? 'line-through text-slate-400' : item.status === 'in_progress' ? 'font-medium text-slate-100' : 'text-slate-300'}">
+                      {idx + 1}. {item.content}
+                    </span>
+
+                    <span class="shrink-0 text-[10px] uppercase font-mono px-1.5 py-0.5 rounded font-semibold {item.status === 'completed' ? 'bg-emerald-900/40 text-emerald-300 border border-emerald-800/50' : item.status === 'in_progress' ? 'bg-indigo-900/60 text-indigo-300 border border-indigo-700 animate-pulse' : 'bg-slate-800 text-slate-400 border border-slate-700/50'}">
+                      {item.status === 'completed' ? 'Готово' : item.status === 'in_progress' ? 'В процессе' : 'Ожидает'}
+                    </span>
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
 
     <!-- Tabs Navigation: Unified Dialog & Tools + Expert -->

@@ -115,6 +115,25 @@
     </div>
   {/if}
 
+  <!-- Mini TODO Progress Pill -->
+  {#if data?.todos && data.todos.length > 0}
+    {@const completed = data.todos.filter(t => t.status === 'completed').length}
+    {@const inProg = data.todos.filter(t => t.status === 'in_progress').length}
+    {@const total = data.todos.length}
+    <div class="my-1.5 p-1 px-2 rounded-lg bg-slate-950/80 border border-indigo-900/40 flex items-center justify-between text-[10px]">
+      <div class="flex items-center gap-1.5 font-medium">
+        <span>📋</span>
+        <span class="text-slate-300">TODO: {completed}/{total}</span>
+        {#if inProg > 0}
+          <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
+        {/if}
+      </div>
+      <div class="w-14 bg-slate-800 h-1.5 rounded-full overflow-hidden">
+        <div class="bg-emerald-400 h-full rounded-full transition-all" style="width: {Math.round((completed / total) * 100)}%"></div>
+      </div>
+    </div>
+  {/if}
+
   <!-- Footer Telemetry -->
   <div class="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
     <div class="flex items-center gap-1">

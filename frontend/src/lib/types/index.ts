@@ -1,5 +1,10 @@
 export type NodeStatus = 'pending' | 'active' | 'calling_tool' | 'waiting_human' | 'completed' | 'failed';
 
+export interface TodoItem {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed';
+}
+
 export interface ToolCallLog {
   id: string;
   name: string;
@@ -43,6 +48,8 @@ export interface AgentNodeData {
   startedAt: string;
   dialog: DialogMessage[];
   toolCalls: ToolCallLog[];
+  todos?: TodoItem[];
+  expectedOutcome?: string;
   humanPrompt?: {
     question: string;
     options?: string[];

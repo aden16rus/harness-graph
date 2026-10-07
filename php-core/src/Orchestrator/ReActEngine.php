@@ -512,8 +512,59 @@ final class ReActEngine
         }
 
         if ($finalAnswer === '' && $turnStep >= $effectiveMaxSteps) {
-            $agentTypeStr = $isSubAgent ? "саб-агента (глубина {$node->depth})" : "главного агента";
-            $finalAnswer = "Execution reached maximum step limit of {$effectiveMaxSteps} ({$agentTypeStr}).";
+            $agentTypeStr = $isSubAgent ? "саб-агента (роль: {$node->role}, глубина {$node->depth})" : "главного агента";
+            $step++;
+
+            $summaryPrompt = "⚠️ ВНИМАНИЕ: Вы достигли лимита шагов выполнения ({$effectiveMaxSteps}) для {$agentTypeStr}.\n"
+                . "Вызов новых инструментов заблокирован. Пожалуйста, предоставьте исчерпывающий итоговый отчет и суммаризацию выполненного:\n"
+                . "1. Что конкретно было сделано (созданные/измененные файлы, выполненные проверки).\n"
+                . "2. Текущий статус пунктов TODO листа (какие выполнены, какие в процессе, какие не начаты).\n"
+                . "3. Ожидаемый результат vs Фактический результат.\n"
+                . "4. Причина остановки (исчерпан лимит шагов) и что осталось доделать.\n"
+                . "5. Четкие рекомендации по следующим шагам для вызывающего агента.";
+
+            $node->dialog[] = [
+                'role' => 'system',
+                'step' => $step,
+                'text' => $summaryPrompt,
+                'timestamp' => gmdate('Y-m-d H:i:s'),
+            ];
+
+            $history[] = Message::user($summaryPrompt);
+
+            // Execute a dedicated final summarization call without any tools allowed
+            try {
+                $fittedSummaryMessages = $this->contextManager->fitContextWindow($history, $agent->tokenLimit);
+                $summaryMessagesPayload = array_map(static fn(Message $m) => $m->toArray(), $fittedSummaryMessages);
+
+                $summaryChatReq = [
+                    'model' => $agent->model,
+                    'messages' => $summaryMessagesPayload,
+                    'tools' => null, // NO TOOLS ALLOWED - strictly summarization!
+                    'temperature' => $agent->temperature,
+                    'session_id' => $session->id,
+                    'node_id' => $node->id,
+                    'llm_profile_id' => $agent->llmProfileId,
+                ];
+
+                $summaryResponse = $this->ipcClient->chatLlm($summaryChatReq);
+                $pTokens = (int)($summaryResponse['prompt_tokens'] ?? 0);
+                $cTokens = (int)($summaryResponse['completion_tokens'] ?? 0);
+                $node->promptTokens += $pTokens;
+                $node->completionTokens += $cTokens;
+                $session->totalPromptTokens += $pTokens;
+                $session->totalCompletionTokens += $cTokens;
+                $this->sessionRepo->save($session);
+
+                $summaryText = trim((string)($summaryResponse['content'] ?? ''));
+                if ($summaryText !== '') {
+                    $finalAnswer = $summaryText;
+                } else {
+                    $finalAnswer = "Execution reached maximum step limit of {$effectiveMaxSteps} ({$agentTypeStr}).";
+                }
+            } catch (\Throwable) {
+                $finalAnswer = "Execution reached maximum step limit of {$effectiveMaxSteps} ({$agentTypeStr}).";
+            }
         }
 
         $node->outputResult = $finalAnswer;

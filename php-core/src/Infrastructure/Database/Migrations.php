@@ -90,6 +90,8 @@ final class Migrations
                 finished_at TEXT,
                 dialog TEXT,
                 tool_calls TEXT,
+                todos TEXT DEFAULT '[]',
+                expected_outcome TEXT DEFAULT '',
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
 
@@ -143,6 +145,18 @@ final class Migrations
 
         try {
             $this->pdo->exec("ALTER TABLE projects ADD COLUMN project_prompt TEXT DEFAULT '';");
+        } catch (\Throwable) {
+            // Already exists
+        }
+
+        try {
+            $this->pdo->exec("ALTER TABLE execution_nodes ADD COLUMN todos TEXT DEFAULT '[]';");
+        } catch (\Throwable) {
+            // Already exists
+        }
+
+        try {
+            $this->pdo->exec("ALTER TABLE execution_nodes ADD COLUMN expected_outcome TEXT DEFAULT '';");
         } catch (\Throwable) {
             // Already exists
         }

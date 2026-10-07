@@ -72,6 +72,7 @@
   };
 
   const allAvailableSkills = [
+    { id: 'todo_write', name: 'Todo Write', desc: 'Формирование и обновление TODO листа с отслеживанием прогресса' },
     { id: 'read_file', name: 'Read File', desc: 'Чтение файлов в рабочей директории' },
     { id: 'write_file', name: 'Write File', desc: 'Создание и редактирование файлов' },
     { id: 'list_dir', name: 'List Directory', desc: 'Просмотр папок и структуры проекта' },

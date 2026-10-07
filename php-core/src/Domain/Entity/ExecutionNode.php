@@ -29,7 +29,9 @@ final class ExecutionNode
         public string $startedAt = '',
         public ?string $finishedAt = null,
         public array $dialog = [],
-        public array $toolCalls = []
+        public array $toolCalls = [],
+        public array $todos = [],
+        public string $expectedOutcome = ''
     ) {
         if ($this->startedAt === '') {
             $this->startedAt = gmdate('Y-m-d H:i:s');
@@ -64,6 +66,8 @@ final class ExecutionNode
             'finished_at' => $this->finishedAt,
             'dialog' => $this->dialog,
             'tool_calls' => $this->toolCalls,
+            'todos' => $this->todos,
+            'expected_outcome' => $this->expectedOutcome,
         ];
     }
 }

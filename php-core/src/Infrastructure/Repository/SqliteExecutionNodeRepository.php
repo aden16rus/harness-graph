@@ -52,12 +52,12 @@ final readonly class SqliteExecutionNodeRepository implements ExecutionNodeRepos
             INSERT INTO execution_nodes (
                 id, session_id, parent_node_id, agent_id, agent_name, role, status, depth,
                 input_prompt, output_result, prompt_tokens, completion_tokens, duration_ms,
-                active_tool, started_at, finished_at, dialog, tool_calls
+                active_tool, started_at, finished_at, dialog, tool_calls, todos, expected_outcome
             )
             VALUES (
                 :id, :sid, :pid, :aid, :aname, :role, :status, :depth,
                 :input, :output, :p_tokens, :c_tokens, :duration,
-                :tool, :started, :finished, :dialog, :tool_calls
+                :tool, :started, :finished, :dialog, :tool_calls, :todos, :expected_outcome
             )
             ON CONFLICT(id) DO UPDATE SET
                 status = excluded.status,
@@ -68,7 +68,9 @@ final readonly class SqliteExecutionNodeRepository implements ExecutionNodeRepos
                 active_tool = excluded.active_tool,
                 finished_at = excluded.finished_at,
                 dialog = excluded.dialog,
-                tool_calls = excluded.tool_calls
+                tool_calls = excluded.tool_calls,
+                todos = excluded.todos,
+                expected_outcome = excluded.expected_outcome
         ');
 
         $stmt->execute([
@@ -90,6 +92,8 @@ final readonly class SqliteExecutionNodeRepository implements ExecutionNodeRepos
             ':finished' => $node->finishedAt,
             ':dialog' => json_encode($node->dialog, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             ':tool_calls' => json_encode($node->toolCalls, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ':todos' => json_encode($node->todos, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ':expected_outcome' => $node->expectedOutcome,
         ]);
     }
 
@@ -104,6 +108,13 @@ final readonly class SqliteExecutionNodeRepository implements ExecutionNodeRepos
         if (!empty($row['tool_calls'])) {
             $toolCalls = json_decode((string)$row['tool_calls'], true) ?: [];
         }
+
+        $todos = [];
+        if (!empty($row['todos'])) {
+            $todos = json_decode((string)$row['todos'], true) ?: [];
+        }
+
+        $expectedOutcome = isset($row['expected_outcome']) ? (string)$row['expected_outcome'] : '';
 
         return new ExecutionNode(
             id: (string)$row['id'],
@@ -123,7 +134,9 @@ final readonly class SqliteExecutionNodeRepository implements ExecutionNodeRepos
             startedAt: (string)$row['started_at'],
             finishedAt: $row['finished_at'] ? (string)$row['finished_at'] : null,
             dialog: $dialog,
-            toolCalls: $toolCalls
+            toolCalls: $toolCalls,
+            todos: $todos,
+            expectedOutcome: $expectedOutcome
         );
     }
 }
