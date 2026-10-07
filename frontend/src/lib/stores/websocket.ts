@@ -176,6 +176,29 @@ class WebSocketManager {
           break;
         }
 
+        case 'graph.node_dialog_message': {
+          const node = updated.get(node_id);
+          if (node) {
+            const exists = node.dialog.some(d => d.role === data.role && d.text === data.text && d.step === data.step);
+            if (!exists) {
+              updated.set(node_id, {
+                ...node,
+                status: 'active',
+                dialog: [
+                  ...node.dialog,
+                  {
+                    role: data.role,
+                    step: data.step,
+                    text: data.text,
+                    timestamp: data.timestamp || now,
+                  },
+                ],
+              });
+            }
+          }
+          break;
+        }
+
         case 'graph.node_stream': {
           const node = updated.get(node_id);
           if (node) {
@@ -512,13 +535,13 @@ export async function stopCurrentSession(): Promise<boolean> {
   }
 }
 
-export async function sendFollowupMessage(sessionId: string, message: string): Promise<boolean> {
+export async function sendFollowupMessage(sessionId: string, message: string, nodeId?: string): Promise<boolean> {
   try {
     sessionStore.update(s => ({ ...s, status: 'running' }));
     const res = await fetch('/api/session/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, message }),
+      body: JSON.stringify({ session_id: sessionId, message, node_id: nodeId }),
     });
     return res.ok;
   } catch (e) {

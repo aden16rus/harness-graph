@@ -40,12 +40,89 @@ final class ReActEngine
         $this->subAgentManager->setEngine($this);
     }
 
+    /**
+     * Reconstructs full conversation message history from a node's dialog.
+     * Preserves all user prompts, assistant turns, tool calls and observations.
+     *
+     * @param array<array<string, mixed>> $dialog
+     * @return array<Message>
+     */
+    public function rebuildHistoryFromDialog(array $dialog, string $currentSystemPrompt): array
+    {
+        $history = [Message::system($currentSystemPrompt)];
+        $count = count($dialog);
+        $i = 0;
+
+        while ($i < $count) {
+            $item = $dialog[$i];
+            $role = (string)($item['role'] ?? '');
+            $text = (string)($item['text'] ?? '');
+
+            if ($role === 'system') {
+                // If it's a runtime system alert, include as a user notice
+                if ($i > 0 && (str_starts_with($text, '🛑') || str_starts_with($text, '⚠️') || str_starts_with($text, '🔁'))) {
+                    $history[] = Message::user("[System Notice: {$text}]");
+                }
+                $i++;
+                continue;
+            }
+
+            if ($role === 'user') {
+                $history[] = Message::user($text);
+                $i++;
+                continue;
+            }
+
+            if ($role === 'thinking') {
+                // Internal reasoning, skip for standard API message history
+                $i++;
+                continue;
+            }
+
+            if ($role === 'assistant') {
+                // Look ahead to check if this assistant turn triggered tool calls
+                $toolCalls = [];
+                $peek = $i + 1;
+                while ($peek < $count && ($dialog[$peek]['role'] ?? '') === 'tool') {
+                    $tItem = $dialog[$peek];
+                    $callId = (string)($tItem['call_id'] ?? ('call_' . $peek));
+                    $name = (string)($tItem['name'] ?? 'tool');
+                    $args = $tItem['args'] ?? [];
+                    $toolCalls[] = new ToolCall(
+                        id: $callId,
+                        name: $name,
+                        arguments: is_array($args) ? $args : []
+                    );
+                    $peek++;
+                }
+
+                $history[] = Message::assistant($text, $toolCalls);
+                $i++;
+                continue;
+            }
+
+            if ($role === 'tool') {
+                $callId = (string)($item['call_id'] ?? ('call_' . $i));
+                $name = (string)($item['name'] ?? 'tool');
+                $content = (string)($item['text'] ?? ($item['output'] ?? 'OK'));
+                $history[] = Message::tool($callId, $content, $name);
+                $i++;
+                continue;
+            }
+
+            $i++;
+        }
+
+        return $history;
+    }
+
     public function executeNode(
         ExecutionNode $node,
         Agent $agent,
         string $taskPrompt,
         Project $project,
-        Session $session
+        Session $session,
+        bool $isContinuation = false
     ): ExecutionNode {
         $context = new SkillExecutionContext(
             session: $session,
@@ -59,8 +136,21 @@ final class ReActEngine
         $systemPrompt = $this->contextManager->buildSystemPrompt($agent, $project);
         $tools = $this->skillRegistry->getToolDefinitionsForAgent($agent, $this->permissionPolicy, $this->agentRepo);
 
-        // Record initial roles in dialog if empty
-        if (empty($node->dialog)) {
+        // Calculate step counter base from existing dialog
+        $baseStep = 0;
+        if (!empty($node->dialog)) {
+            foreach ($node->dialog as $d) {
+                if (!empty($d['step'])) {
+                    $baseStep = max($baseStep, (int)$d['step']);
+                }
+            }
+        }
+
+        // If dialog already has messages, rebuild full conversation history so context is completely preserved!
+        if (!empty($node->dialog)) {
+            $history = $this->rebuildHistoryFromDialog($node->dialog, $systemPrompt);
+        } else {
+            // First time execution: initialize dialog with system and user task
             $node->dialog[] = [
                 'role' => 'system',
                 'step' => 0,
@@ -74,12 +164,12 @@ final class ReActEngine
                 'timestamp' => gmdate('Y-m-d H:i:s'),
             ];
             $this->nodeRepo->save($node);
-        }
 
-        $history = [
-            Message::system($systemPrompt),
-            Message::user($taskPrompt),
-        ];
+            $history = [
+                Message::system($systemPrompt),
+                Message::user($taskPrompt),
+            ];
+        }
 
         // Determine step limit: subagents use subagentMaxSteps, root agent uses rootMaxSteps
         $isSubAgent = ($node->depth > 0 || !empty($node->parentNodeId));
@@ -92,10 +182,12 @@ final class ReActEngine
         $loopThreshold = $this->settings?->loopDetectionThreshold ?? 3;
         $toolCallHistory = [];
 
-        $step = 0;
+        $step = $baseStep;
+        $turnStep = 0;
         $finalAnswer = '';
 
-        while ($step < $effectiveMaxSteps) {
+        while ($turnStep < $effectiveMaxSteps) {
+            $turnStep++;
             $step++;
 
             // Fit context window if needed
@@ -210,7 +302,7 @@ final class ReActEngine
                     'timestamp' => gmdate('Y-m-d H:i:s'),
                 ];
                 $finalAnswer = $tokenLimitError;
-                break; // Break the ReAct while loop!
+                break;
             }
 
             $parsedToolCalls = [];
@@ -308,7 +400,6 @@ final class ReActEngine
                         ? "Обнаружен циклический паттерн вызова инструментов (период {$cyclePeriod}) {$loopThreshold} раз подряд."
                         : "Инструмент(ы) [{$toolNamesList}] вызван(ы) с идентичными параметрами {$consecutiveCount} раз подряд без продвижения к решению.";
 
-                    // Publish loop detection event
                     $this->ipcClient->publishEvent('graph.loop_detected', $session->id, $node->id, [
                         'tools' => $toolNamesList,
                         'repeats' => $consecutiveCount,
@@ -324,9 +415,8 @@ final class ReActEngine
                     ];
 
                     $finalAnswer = "🛑 Остановлено защитой от зацикливания: {$loopReason}";
-                    break; // Break the ReAct while loop!
+                    break;
                 } elseif ($consecutiveCount === ($loopThreshold - 1) && $loopThreshold > 2) {
-                    // Inject warning in history
                     $toolNamesList = implode(', ', array_map(fn($tc) => $tc->name, $parsedToolCalls));
                     $history[] = Message::user(
                         "⚠️ ВНИМАНИЕ: Зафиксировано повторение вызова [{$toolNamesList}] с идентичными параметрами ({$consecutiveCount} раз). Не повторяйте этот вызов! Смените тактику, используйте другие инструменты или дайте итоговый ответ пользователю."
@@ -349,7 +439,6 @@ final class ReActEngine
                 $node->activeTool = $toolName;
                 $this->nodeRepo->save($node);
 
-                // Publish tool_call_started event
                 $this->ipcClient->publishEvent('graph.tool_call_started', $session->id, $node->id, [
                     'tool' => $toolName,
                     'arguments' => $toolArgs,
@@ -361,9 +450,7 @@ final class ReActEngine
                 $skillResult = null;
 
                 try {
-                    // Check permissions
                     $this->permissionPolicy->assertAllowed($agent, $toolName);
-
                     $skill = $this->skillRegistry->get($toolName);
                     if ($skill === null) {
                         $skillResult = SkillResult::fail("Tool '{$toolName}' is not registered");
@@ -376,7 +463,6 @@ final class ReActEngine
 
                 $toolDurationMs = (int)((microtime(true) - $toolStart) * 1000);
 
-                // Record tool execution in node
                 $node->toolCalls[] = [
                     'id' => $toolCall->id,
                     'name' => $toolName,
@@ -388,7 +474,6 @@ final class ReActEngine
                     'step' => $step,
                 ];
 
-                // Record tool response in dialog
                 $node->dialog[] = [
                     'role' => 'tool',
                     'step' => $step,
@@ -403,7 +488,6 @@ final class ReActEngine
                     'timestamp' => gmdate('Y-m-d H:i:s'),
                 ];
 
-                // Publish tool_call_finished event
                 $this->ipcClient->publishEvent('graph.tool_call_finished', $session->id, $node->id, [
                     'tool' => $toolName,
                     'call_id' => $toolCall->id,
@@ -415,7 +499,6 @@ final class ReActEngine
                     'step' => $step,
                 ]);
 
-                // Append observation back into conversation history
                 $history[] = Message::tool(
                     toolCallId: $toolCall->id,
                     content: $skillResult->toMessageContent(),
@@ -428,7 +511,7 @@ final class ReActEngine
             }
         }
 
-        if ($finalAnswer === '' && $step >= $effectiveMaxSteps) {
+        if ($finalAnswer === '' && $turnStep >= $effectiveMaxSteps) {
             $agentTypeStr = $isSubAgent ? "саб-агента (глубина {$node->depth})" : "главного агента";
             $finalAnswer = "Execution reached maximum step limit of {$effectiveMaxSteps} ({$agentTypeStr}).";
         }

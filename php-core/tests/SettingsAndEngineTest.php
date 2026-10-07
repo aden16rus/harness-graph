@@ -414,6 +414,35 @@ final class SettingsAndEngineTest
         assert(count($tokEvents) === 1, "Expected 1 graph.token_limit_exceeded event");
         echo "✓ Subagent token limit enforcement (subagent_max_tokens = 50) passed\n";
 
+        // 6. Test Continuing Dialog with preserved history
+        $mockIpcCont = new MockIpcClient();
+        $engineCont = new ReActEngine(
+            ipcClient: $mockIpcCont,
+            contextManager: $contextManager,
+            skillRegistry: $skillRegistry,
+            permissionPolicy: $policy,
+            nodeRepo: $nodeRepo,
+            sessionRepo: $sessionRepo,
+            subAgentManager: $subAgentMgr,
+            agentRepo: $agentRepo,
+            settings: $defaultSettings
+        );
+
+        $existingDialog = [
+            ['role' => 'system', 'step' => 0, 'text' => 'System instructions'],
+            ['role' => 'user', 'step' => 1, 'text' => 'Initial request'],
+            ['role' => 'assistant', 'step' => 1, 'text' => 'First answer'],
+            ['role' => 'user', 'step' => 2, 'text' => 'Continuation request'],
+        ];
+
+        $reconstructedHistory = $engineCont->rebuildHistoryFromDialog($existingDialog, 'System instructions');
+        assert(count($reconstructedHistory) === 4, "Expected 4 messages in reconstructed history, got " . count($reconstructedHistory));
+        assert($reconstructedHistory[0]->role === 'system', "First message should be system");
+        assert($reconstructedHistory[1]->role === 'user' && $reconstructedHistory[1]->content === 'Initial request');
+        assert($reconstructedHistory[2]->role === 'assistant' && $reconstructedHistory[2]->content === 'First answer');
+        assert($reconstructedHistory[3]->role === 'user' && $reconstructedHistory[3]->content === 'Continuation request');
+        echo "✓ Conversation history reconstruction and dialog continuation passed\n";
+
         echo "\n=======================================================\n";
         echo "ALL UNIT & INTEGRATION TESTS PASSED SUCCESSFULLY!\n";
         echo "=======================================================\n";

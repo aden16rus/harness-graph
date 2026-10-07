@@ -74,7 +74,8 @@ switch ($command) {
         echo "Sending followup message to manager for session: {$sessionId}\n";
         $app->migrate();
         try {
-            $session = $app->sendSessionMessage($sessionId, $message);
+            $nodeId = $cliOptions['node-id'] ?? (getenv('NODE_ID') ?: ($data['node_id'] ?? null));
+            $session = $app->sendSessionMessage($sessionId, $message, $nodeId ? (string)$nodeId : null);
             echo "Session followup completed with status: {$session->status->value}\n";
             echo "Prompt Tokens: {$session->totalPromptTokens}, Completion Tokens: {$session->totalCompletionTokens}\n";
         } catch (\Throwable $e) {

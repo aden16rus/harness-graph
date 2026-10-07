@@ -781,18 +781,21 @@ func main() {
 		}
 	}
 
-	// Helper to send followup message to session manager
-	launchSessionMessage := func(sessionID, message string) {
+	// Helper to send followup message to session manager or node
+	launchSessionMessage := func(sessionID, nodeID, message string) {
 		args := []string{
 			cfg.PHPHarness,
 			"session:message",
 			fmt.Sprintf("--session-id=%s", sessionID),
 			fmt.Sprintf("--message=%s", message),
 		}
+		if nodeID != "" {
+			args = append(args, fmt.Sprintf("--node-id=%s", nodeID))
+		}
 
 		activeProf := profilesStore.getActive()
 		curSt := settingsStore.Get()
-		log.Printf("[Session] Sending followup message to manager (Session: %s)\n", sessionID)
+		log.Printf("[Session] Sending followup message (Session: %s, Node: %s)\n", sessionID, nodeID)
 
 		wsHub.Broadcast(ws.Event{
 			Event:     "session.started",
@@ -800,6 +803,7 @@ func main() {
 			Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 			Data: map[string]any{
 				"session_id": sessionID,
+				"node_id":    nodeID,
 				"message":    message,
 			},
 		})
@@ -1086,7 +1090,7 @@ func main() {
 		})
 	})
 
-	// API Send Followup Message to Session Manager
+	// API Send Followup Message to Session Manager / Node
 	mux.HandleFunc("/api/session/message", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1094,6 +1098,7 @@ func main() {
 		}
 		var body struct {
 			SessionID string `json:"session_id"`
+			NodeID    string `json:"node_id"`
 			Message   string `json:"message"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -1105,12 +1110,13 @@ func main() {
 			return
 		}
 
-		go launchSessionMessage(body.SessionID, strings.TrimSpace(body.Message))
+		go launchSessionMessage(body.SessionID, strings.TrimSpace(body.NodeID), strings.TrimSpace(body.Message))
 
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":     "started",
 			"session_id": body.SessionID,
+			"node_id":    body.NodeID,
 		})
 	})
 

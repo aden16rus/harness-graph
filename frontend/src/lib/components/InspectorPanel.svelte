@@ -24,15 +24,45 @@
     if (!followupText.trim()) return;
     const sessId = $sessionStore.sessionId;
     if (!sessId || sessId === 'sess_default') {
-      alert('Нет активной сессии для отправки сообщения менеджеру.');
+      alert('Нет активной сессии для отправки сообщения.');
       return;
     }
+    const targetNodeId = currentNode?.id;
+    const text = followupText.trim();
+    followupText = '';
     isSendingFollowup = true;
+
+    // Optimistically append user message to current node dialog so dialog immediately continues!
+    if (currentNode) {
+      nodesStore.update(map => {
+        const updated = new Map(map);
+        const n = updated.get(currentNode.id);
+        if (n) {
+          let maxStep = 0;
+          for (const d of n.dialog) {
+            if (d.step) maxStep = Math.max(maxStep, d.step);
+          }
+          updated.set(n.id, {
+            ...n,
+            status: 'active',
+            dialog: [
+              ...n.dialog,
+              {
+                role: 'user',
+                step: maxStep + 1,
+                text,
+                timestamp: new Date().toISOString(),
+              },
+            ],
+          });
+        }
+        return updated;
+      });
+    }
+
     try {
-      const ok = await sendFollowupMessage(sessId, followupText.trim());
-      if (ok) {
-        followupText = '';
-      } else {
+      const ok = await sendFollowupMessage(sessId, text, targetNodeId);
+      if (!ok) {
         alert('Ошибка при отправке сообщения менеджеру.');
       }
     } finally {
