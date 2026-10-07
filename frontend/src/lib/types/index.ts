@@ -67,3 +67,12 @@ export interface ProjectSettings {
   llmApiKey: string;
   defaultModel: string;
 }
+
+export interface SystemSettings {
+  subagent_max_steps: number;
+  root_max_steps: number;
+  loop_protection_enabled: boolean;
+  loop_detection_threshold: number;
+  llm_max_retries: number;
+  llm_retry_delay_sec: number;
+}

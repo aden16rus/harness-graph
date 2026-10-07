@@ -16,6 +16,7 @@ use Harness\Infrastructure\Repository\SqliteExecutionNodeRepository;
 use Harness\Infrastructure\Repository\SqliteProjectRepository;
 use Harness\Infrastructure\Repository\SqliteSessionRepository;
 use Harness\Infrastructure\Repository\SqliteTeamRepository;
+use Harness\Infrastructure\Settings\SystemSettings;
 use Harness\Orchestrator\ReActEngine;
 use Harness\Orchestrator\SubAgentManager;
 use Harness\Skills\Builtin\BrowseLinkSkill;
@@ -44,6 +45,7 @@ final class HarnessApp
     public readonly JsonRpcClient $ipcClient;
     public readonly SubAgentManager $subAgentManager;
     public readonly ReActEngine $engine;
+    public readonly SystemSettings $settings;
 
     public function __construct(
         string $dbPath = '/data/harness.db',
@@ -65,6 +67,9 @@ final class HarnessApp
         $this->permissionPolicy = new PermissionPolicy();
         $this->contextManager = new ContextManager($this->skillRegistry, $this->agentRepo);
 
+        $settingsPath = (getenv('DATA_DIR') ?: dirname($dbPath)) . '/settings.json';
+        $this->settings = SystemSettings::load($settingsPath);
+
         $this->subAgentManager = new SubAgentManager(
             agentRepo: $this->agentRepo,
             nodeRepo: $this->nodeRepo,
@@ -83,7 +88,8 @@ final class HarnessApp
             nodeRepo: $this->nodeRepo,
             sessionRepo: $this->sessionRepo,
             subAgentManager: $this->subAgentManager,
-            agentRepo: $this->agentRepo
+            agentRepo: $this->agentRepo,
+            settings: $this->settings
         );
     }
 
@@ -97,7 +103,6 @@ final class HarnessApp
         $this->skillRegistry->register(new AskHumanExpertSkill());
         $this->skillRegistry->register(new CallSubAgentSkill());
         $this->skillRegistry->register(new BrowseLinkSkill());
-
     }
 
     public function migrate(): void

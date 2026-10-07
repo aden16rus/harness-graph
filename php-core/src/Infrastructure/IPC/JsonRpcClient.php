@@ -5,7 +5,7 @@ namespace Harness\Infrastructure\IPC;
 
 use RuntimeException;
 
-final class JsonRpcClient
+class JsonRpcClient
 {
     /** @var resource|null */
     private $stream = null;

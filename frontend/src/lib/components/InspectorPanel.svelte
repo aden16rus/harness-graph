@@ -128,22 +128,36 @@
         <div class="space-y-3">
           {#each currentNode.dialog as msg}
             {#if msg.role === 'system'}
-              <!-- System Prompt (Collapsible) -->
-              <details class="group rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs leading-relaxed transition">
-                <summary class="cursor-pointer list-none flex items-center justify-between text-[10px] uppercase font-bold tracking-wider text-slate-400 hover:text-slate-200">
-                  <span class="flex items-center gap-1.5">
-                    <span>⚙️</span>
-                    <span>Системный промпт (System)</span>
-                  </span>
-                  <div class="flex items-center gap-2">
-                    <span class="text-slate-600 font-mono text-[9px]">{new Date(msg.timestamp).toLocaleTimeString()}</span>
-                    <span class="text-slate-500 group-open:rotate-180 transition-transform text-[11px]">▼</span>
+              {#if msg.text.startsWith('🛑') || msg.text.startsWith('⚠️') || msg.text.startsWith('🔁')}
+                <!-- Alert notification message for anti-loop and LLM retry -->
+                <div class="rounded-xl p-3 text-xs leading-relaxed {msg.text.startsWith('🛑') ? 'bg-rose-950/40 border border-rose-800/60 text-rose-200' : 'bg-amber-950/30 border border-amber-800/50 text-amber-200'}">
+                  <div class="font-bold text-[10px] uppercase tracking-wider mb-1 flex items-center justify-between {msg.text.startsWith('🛑') ? 'text-rose-400' : 'text-amber-400'}">
+                    <span class="flex items-center gap-1.5">
+                      <span>{msg.text.startsWith('🛑') ? '🛑' : msg.text.startsWith('🔁') ? '🔁' : '⚠️'}</span>
+                      <span>Системное оповещение</span>
+                    </span>
+                    <span class="text-slate-500 font-mono text-[9px]">{new Date(msg.timestamp).toLocaleTimeString()}</span>
                   </div>
-                </summary>
-                <div class="mt-2.5 pt-2 border-t border-slate-800/80 whitespace-pre-wrap select-text font-mono text-[11px] text-slate-300 max-h-60 overflow-y-auto bg-slate-900/40 p-2.5 rounded-lg">
-                  {msg.text}
+                  <div class="whitespace-pre-wrap select-text font-medium">{msg.text}</div>
                 </div>
-              </details>
+              {:else}
+                <!-- System Prompt (Collapsible) -->
+                <details class="group rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs leading-relaxed transition">
+                  <summary class="cursor-pointer list-none flex items-center justify-between text-[10px] uppercase font-bold tracking-wider text-slate-400 hover:text-slate-200">
+                    <span class="flex items-center gap-1.5">
+                      <span>⚙️</span>
+                      <span>Системный промпт (System)</span>
+                    </span>
+                    <div class="flex items-center gap-2">
+                      <span class="text-slate-600 font-mono text-[9px]">{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                      <span class="text-slate-500 group-open:rotate-180 transition-transform text-[11px]">▼</span>
+                    </div>
+                  </summary>
+                  <div class="mt-2.5 pt-2 border-t border-slate-800/80 whitespace-pre-wrap select-text font-mono text-[11px] text-slate-300 max-h-60 overflow-y-auto bg-slate-900/40 p-2.5 rounded-lg">
+                    {msg.text}
+                  </div>
+                </details>
+              {/if}
 
             {:else if msg.role === 'user'}
               <!-- User Prompt -->

@@ -15,6 +15,7 @@ use Harness\Domain\Repository\SessionRepositoryInterface;
 use Harness\Domain\ValueObject\Message;
 use Harness\Domain\ValueObject\ToolCall;
 use Harness\Infrastructure\IPC\JsonRpcClient;
+use Harness\Infrastructure\Settings\SystemSettings;
 use Harness\Skills\PermissionPolicy;
 use Harness\Skills\SkillExecutionContext;
 use Harness\Skills\SkillRegistry;
@@ -33,7 +34,8 @@ final class ReActEngine
         private readonly SessionRepositoryInterface $sessionRepo,
         private readonly SubAgentManager $subAgentManager,
         private readonly ?AgentRepositoryInterface $agentRepo = null,
-        private readonly int $maxSteps = self::DEFAULT_MAX_STEPS
+        private readonly int $maxSteps = self::DEFAULT_MAX_STEPS,
+        private readonly ?SystemSettings $settings = null
     ) {
         $this->subAgentManager->setEngine($this);
     }
@@ -77,10 +79,20 @@ final class ReActEngine
             Message::user($taskPrompt),
         ];
 
+        // Determine step limit: subagents use subagentMaxSteps, root agent uses rootMaxSteps
+        $isSubAgent = ($node->depth > 0 || !empty($node->parentNodeId));
+        $effectiveMaxSteps = $isSubAgent
+            ? ($this->settings?->subagentMaxSteps ?? 15)
+            : ($this->settings?->rootMaxSteps ?? $this->maxSteps);
+
+        $loopProtectionEnabled = $this->settings?->loopProtectionEnabled ?? true;
+        $loopThreshold = $this->settings?->loopDetectionThreshold ?? 3;
+        $toolCallHistory = [];
+
         $step = 0;
         $finalAnswer = '';
 
-        while ($step < $this->maxSteps) {
+        while ($step < $effectiveMaxSteps) {
             $step++;
 
             // Fit context window if needed
@@ -99,12 +111,57 @@ final class ReActEngine
                 'llm_profile_id' => $agent->llmProfileId,
             ];
 
-            // Call LLM through Go Engine proxy
-            $llmResponse = $this->ipcClient->chatLlm($chatReq);
+            // Call LLM with retry mechanism and pause backoff on errors
+            $maxRetries = $this->settings?->llmMaxRetries ?? 3;
+            $retryDelaySec = $this->settings?->llmRetryDelaySec ?? 3;
+            $llmResponse = null;
+            $lastLlmError = null;
+
+            for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+                if ($attempt > 0) {
+                    $this->ipcClient->publishEvent('graph.llm_retry', $session->id, $node->id, [
+                        'attempt' => $attempt,
+                        'max_retries' => $maxRetries,
+                        'delay_sec' => $retryDelaySec,
+                        'reason' => $lastLlmError,
+                    ]);
+                    sleep($retryDelaySec);
+                }
+
+                try {
+                    $llmResponse = $this->ipcClient->chatLlm($chatReq);
+                    $content = (string)($llmResponse['content'] ?? '');
+                    $reasoningContent = (string)($llmResponse['reasoning_content'] ?? '');
+
+                    // Fallback: extract <think> from content if model put it inside content
+                    if ($reasoningContent === '' && str_contains($content, '<think>') && str_contains($content, '</think>')) {
+                        $start = strpos($content, '<think>');
+                        $end = strpos($content, '</think>');
+                        if ($start !== false && $end !== false && $end > $start) {
+                            $reasoningContent = trim(substr($content, $start + 7, $end - ($start + 7)));
+                            $content = trim(substr($content, 0, $start) . substr($content, $end + 8));
+                        }
+                    }
+
+                    // Transient rate limit or proxy error check
+                    if ((str_contains($content, '429') || str_contains($content, 'RESOURCE_EXHAUSTED') || str_contains($content, '[Proxy Error:')) && $attempt < $maxRetries) {
+                        $lastLlmError = "Rate limit / proxy response: " . substr($content, 0, 120);
+                        continue;
+                    }
+
+                    $lastLlmError = null;
+                    break;
+                } catch (\Throwable $e) {
+                    $lastLlmError = $e->getMessage();
+                    if ($attempt < $maxRetries) {
+                        continue;
+                    }
+                    throw $e;
+                }
+            }
+
             $content = (string)($llmResponse['content'] ?? '');
             $reasoningContent = (string)($llmResponse['reasoning_content'] ?? '');
-
-            // Fallback: extract <think> from content if model put it inside content
             if ($reasoningContent === '' && str_contains($content, '<think>') && str_contains($content, '</think>')) {
                 $start = strpos($content, '<think>');
                 $end = strpos($content, '</think>');
@@ -112,14 +169,6 @@ final class ReActEngine
                     $reasoningContent = trim(substr($content, $start + 7, $end - ($start + 7)));
                     $content = trim(substr($content, 0, $start) . substr($content, $end + 8));
                 }
-            }
-
-            // Handle transient 429 rate limit quota bursts with automatic backoff retry
-            if (str_contains($content, '429') || str_contains($content, 'RESOURCE_EXHAUSTED')) {
-                usleep(3000000); // 3 seconds backoff
-                $llmResponse = $this->ipcClient->chatLlm($chatReq);
-                $content = (string)($llmResponse['content'] ?? '');
-                $reasoningContent = (string)($llmResponse['reasoning_content'] ?? $reasoningContent);
             }
 
             $rawToolCalls = (array)($llmResponse['tool_calls'] ?? []);
@@ -179,6 +228,78 @@ final class ReActEngine
                     return $node;
                 }
                 break;
+            }
+
+            // Anti-Loop Protection check when tools are called
+            if ($loopProtectionEnabled && !empty($parsedToolCalls)) {
+                $turnSignatures = [];
+                foreach ($parsedToolCalls as $tc) {
+                    $argsJson = json_encode($tc->arguments, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                    $turnSignatures[] = $tc->name . ':' . md5((string)$argsJson);
+                }
+                $currentTurnSignature = implode('|', $turnSignatures);
+                $toolCallHistory[] = $currentTurnSignature;
+
+                // Check 1: Consecutive identical tool calls
+                $historyLen = count($toolCallHistory);
+                $consecutiveCount = 0;
+                for ($i = $historyLen - 1; $i >= 0; $i--) {
+                    if ($toolCallHistory[$i] === $currentTurnSignature) {
+                        $consecutiveCount++;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Check 2: Cycle detection (e.g. A -> B -> A -> B)
+                $cycleDetected = false;
+                $cyclePeriod = 0;
+                if ($historyLen >= 4 && $historyLen >= $loopThreshold * 2) {
+                    $p2Matches = true;
+                    for ($k = 0; $k < $loopThreshold * 2; $k++) {
+                        if ($toolCallHistory[$historyLen - 1 - $k] !== $toolCallHistory[$historyLen - 1 - ($k % 2)]) {
+                            $p2Matches = false;
+                            break;
+                        }
+                    }
+                    if ($p2Matches && $toolCallHistory[$historyLen - 1] !== $toolCallHistory[$historyLen - 2]) {
+                        $cycleDetected = true;
+                        $cyclePeriod = 2;
+                    }
+                }
+
+                if ($consecutiveCount >= $loopThreshold || $cycleDetected) {
+                    $toolNamesList = implode(', ', array_map(fn($tc) => $tc->name, $parsedToolCalls));
+                    $loopReason = $cycleDetected
+                        ? "Обнаружен циклический паттерн вызова инструментов (период {$cyclePeriod}) {$loopThreshold} раз подряд."
+                        : "Инструмент(ы) [{$toolNamesList}] вызван(ы) с идентичными параметрами {$consecutiveCount} раз подряд без продвижения к решению.";
+
+                    // Publish loop detection event
+                    $this->ipcClient->publishEvent('graph.loop_detected', $session->id, $node->id, [
+                        'tools' => $toolNamesList,
+                        'repeats' => $consecutiveCount,
+                        'reason' => $loopReason,
+                    ]);
+
+                    $node->dialog[] = [
+                        'role' => 'system',
+                        'text' => "🛑 Защита от зацикливания: {$loopReason} Выполнение шагов прервано.",
+                        'timestamp' => gmdate('Y-m-d H:i:s'),
+                    ];
+
+                    $finalAnswer = "🛑 Остановлено защитой от зацикливания: {$loopReason}";
+                    break; // Break the ReAct while loop!
+                } elseif ($consecutiveCount === ($loopThreshold - 1) && $loopThreshold > 2) {
+                    $toolNamesList = implode(', ', array_map(fn($tc) => $tc->name, $parsedToolCalls));
+                    $history[] = Message::user(
+                        "⚠️ ВНИМАНИЕ: Зафиксировано повторение вызова [{$toolNamesList}] с идентичными параметрами ({$consecutiveCount} раз). Не повторяйте этот вызов! Смените тактику, используйте другие инструменты или дайте итоговый ответ пользователю."
+                    );
+                    $node->dialog[] = [
+                        'role' => 'system',
+                        'text' => "⚠️ Предупреждение о потенциальном зацикливании: инструмент [{$toolNamesList}] повторяется {$consecutiveCount} раз подряд.",
+                        'timestamp' => gmdate('Y-m-d H:i:s'),
+                    ];
+                }
             }
 
             // Execute each requested tool call
@@ -265,8 +386,9 @@ final class ReActEngine
             }
         }
 
-        if ($finalAnswer === '' && $step >= $this->maxSteps) {
-            $finalAnswer = "Execution reached maximum step limit of {$this->maxSteps}.";
+        if ($finalAnswer === '' && $step >= $effectiveMaxSteps) {
+            $agentTypeStr = $isSubAgent ? "саб-агента (глубина {$node->depth})" : "главного агента";
+            $finalAnswer = "Execution reached maximum step limit of {$effectiveMaxSteps} ({$agentTypeStr}).";
         }
 
         $node->outputResult = $finalAnswer;

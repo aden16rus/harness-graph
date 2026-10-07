@@ -271,6 +271,30 @@ class WebSocketManager {
           break;
         }
 
+        case 'graph.loop_detected': {
+          const node = updated.get(node_id);
+          if (node) {
+            node.dialog.push({
+              role: 'system',
+              text: `🛑 Защита от зацикливания: ${data.reason || 'Обнаружен цикл'}`,
+              timestamp: now,
+            });
+          }
+          break;
+        }
+
+        case 'graph.llm_retry': {
+          const node = updated.get(node_id);
+          if (node) {
+            node.dialog.push({
+              role: 'system',
+              text: `🔁 Повтор запроса к LLM API (${data.attempt}/${data.max_retries}) через ${data.delay_sec} сек... (${data.reason || 'ошибка сети или квоты'})`,
+              timestamp: now,
+            });
+          }
+          break;
+        }
+
         case 'graph.human_required': {
           const node = updated.get(node_id);
           if (node) {

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -131,6 +132,85 @@ func (s *LLMProfilesStore) getActive() *LLMProfile {
 	return nil
 }
 
+type SystemSettings struct {
+	SubAgentMaxSteps       int  `json:"subagent_max_steps"`
+	RootMaxSteps           int  `json:"root_max_steps"`
+	LoopProtectionEnabled  bool `json:"loop_protection_enabled"`
+	LoopDetectionThreshold int  `json:"loop_detection_threshold"`
+	LLMMaxRetries          int  `json:"llm_max_retries"`
+	LLMRetryDelaySec       int  `json:"llm_retry_delay_sec"`
+}
+
+type SystemSettingsStore struct {
+	Settings SystemSettings `json:"settings"`
+	mu       sync.RWMutex
+	filePath string
+}
+
+func newSystemSettingsStore(dataDir string) *SystemSettingsStore {
+	filePath := filepath.Join(dataDir, "settings.json")
+	store := &SystemSettingsStore{
+		filePath: filePath,
+		Settings: SystemSettings{
+			SubAgentMaxSteps:       15,
+			RootMaxSteps:           25,
+			LoopProtectionEnabled:  true,
+			LoopDetectionThreshold: 3,
+			LLMMaxRetries:          3,
+			LLMRetryDelaySec:       3,
+		},
+	}
+
+	if data, err := os.ReadFile(filePath); err == nil {
+		var loaded SystemSettings
+		if err := json.Unmarshal(data, &loaded); err == nil {
+			if loaded.SubAgentMaxSteps > 0 {
+				store.Settings.SubAgentMaxSteps = loaded.SubAgentMaxSteps
+			}
+			if loaded.RootMaxSteps > 0 {
+				store.Settings.RootMaxSteps = loaded.RootMaxSteps
+			}
+			store.Settings.LoopProtectionEnabled = loaded.LoopProtectionEnabled
+			if loaded.LoopDetectionThreshold >= 2 {
+				store.Settings.LoopDetectionThreshold = loaded.LoopDetectionThreshold
+			}
+			if loaded.LLMMaxRetries >= 0 {
+				store.Settings.LLMMaxRetries = loaded.LLMMaxRetries
+			}
+			if loaded.LLMRetryDelaySec > 0 {
+				store.Settings.LLMRetryDelaySec = loaded.LLMRetryDelaySec
+			}
+			return store
+		}
+	}
+
+	_ = store.save()
+	return store
+}
+
+func (s *SystemSettingsStore) save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := json.MarshalIndent(s.Settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.filePath, data, 0644)
+}
+
+func (s *SystemSettingsStore) Update(st SystemSettings) error {
+	s.mu.Lock()
+	s.Settings = st
+	s.mu.Unlock()
+	return s.save()
+}
+
+func (s *SystemSettingsStore) Get() SystemSettings {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Settings
+}
+
 func runPHPCommand(phpBin, phpHarness string, args ...string) ([]byte, error) {
 	cmdArgs := append([]string{phpHarness}, args...)
 	cmd := exec.Command(phpBin, cmdArgs...)
@@ -160,6 +240,9 @@ func main() {
 	// Profiles Store
 	profilesStore := newLLMProfilesStore(cfg.DataDir, cfg)
 
+	// Settings Store
+	settingsStore := newSystemSettingsStore(cfg.DataDir)
+
 	// 1. NDJSON Logger
 	ndjson, err := logger.NewNDJSONLogger(cfg.LogDir, 2000)
 	if err != nil {
@@ -180,6 +263,8 @@ func main() {
 
 	// 4. LLM Gateway Client
 	llmClient := llm.NewClient(cfg.OpenAIBaseURL, cfg.OpenAIKey)
+	curSettings := settingsStore.Get()
+	llmClient.SetRetryConfig(curSettings.LLMMaxRetries, curSettings.LLMRetryDelaySec)
 
 	// 5. WebSocket Hub
 	wsHub := ws.NewHub()
@@ -192,7 +277,10 @@ func main() {
 		defer profilesStore.mu.RUnlock()
 		for _, p := range profilesStore.Profiles {
 			if p.ID == profileID {
-				return llm.NewClient(p.BaseURL, p.APIKey)
+				client := llm.NewClient(p.BaseURL, p.APIKey)
+				st := settingsStore.Get()
+				client.SetRetryConfig(st.LLMMaxRetries, st.LLMRetryDelaySec)
+				return client
 			}
 		}
 		return nil
@@ -255,6 +343,54 @@ func main() {
 				"ok":              true,
 				"openai_base_url": cfg.OpenAIBaseURL,
 				"default_model":   cfg.DefaultModel,
+			})
+			return
+		}
+
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	// API System Settings (Step limits, Anti-loop, LLM retry with pause)
+	mux.HandleFunc("/api/settings", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if r.Method == http.MethodGet {
+			st := settingsStore.Get()
+			_ = json.NewEncoder(w).Encode(st)
+			return
+		}
+
+		if r.Method == http.MethodPost {
+			var newSettings SystemSettings
+			if err := json.NewDecoder(r.Body).Decode(&newSettings); err != nil {
+				http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if newSettings.SubAgentMaxSteps <= 0 {
+				newSettings.SubAgentMaxSteps = 15
+			}
+			if newSettings.RootMaxSteps <= 0 {
+				newSettings.RootMaxSteps = 25
+			}
+			if newSettings.LoopDetectionThreshold < 2 {
+				newSettings.LoopDetectionThreshold = 3
+			}
+			if newSettings.LLMMaxRetries < 0 {
+				newSettings.LLMMaxRetries = 0
+			}
+			if newSettings.LLMRetryDelaySec <= 0 {
+				newSettings.LLMRetryDelaySec = 1
+			}
+
+			if err := settingsStore.Update(newSettings); err != nil {
+				http.Error(w, "Failed to save settings: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			llmClient.SetRetryConfig(newSettings.LLMMaxRetries, newSettings.LLMRetryDelaySec)
+
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"ok":       true,
+				"settings": newSettings,
 			})
 			return
 		}
@@ -550,6 +686,7 @@ func main() {
 		}
 
 		activeProf := profilesStore.getActive()
+		curSt := settingsStore.Get()
 		log.Printf("[Session] Launching PHP harness task (Session: %s, Project: %s, Team: %s)\n", sessionID, projectID, teamID)
 
 		wsHub.Broadcast(ws.Event{
@@ -573,6 +710,12 @@ func main() {
 			"SESSION_ID="+sessionID,
 			"PROJECT_ID="+projectID,
 			"TEAM_ID="+teamID,
+			"SUBAGENT_MAX_STEPS="+strconv.Itoa(curSt.SubAgentMaxSteps),
+			"ROOT_MAX_STEPS="+strconv.Itoa(curSt.RootMaxSteps),
+			"LOOP_PROTECTION_ENABLED="+strconv.FormatBool(curSt.LoopProtectionEnabled),
+			"LOOP_DETECTION_THRESHOLD="+strconv.Itoa(curSt.LoopDetectionThreshold),
+			"LLM_MAX_RETRIES="+strconv.Itoa(curSt.LLMMaxRetries),
+			"LLM_RETRY_DELAY_SEC="+strconv.Itoa(curSt.LLMRetryDelaySec),
 		)
 
 		if activeProf != nil {
@@ -757,9 +900,9 @@ func main() {
 				http.Error(w, "Invalid body: "+err.Error(), http.StatusBadRequest)
 				return
 			}
-			out, err := runPHPCommandWithStdin(cfg.PHPBin, cfg.PHPHarness, body, "tasks:schedule")
-			if err != nil {
-				http.Error(w, fmt.Sprintf("PHP error: %v (%s)", err, string(out)), http.StatusInternalServerError)
+			out, runErr := runPHPCommandWithStdin(cfg.PHPBin, cfg.PHPHarness, body, "tasks:schedule")
+			if runErr != nil {
+				http.Error(w, fmt.Sprintf("PHP error: %v (%s)", runErr, string(out)), http.StatusInternalServerError)
 				return
 			}
 			_, _ = w.Write(out)

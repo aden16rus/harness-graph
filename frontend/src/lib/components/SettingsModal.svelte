@@ -6,7 +6,7 @@
   export let isOpen = false;
   export let onClose: () => void = () => {};
 
-  let activeSection: 'project' | 'team' | 'llm' = 'project';
+  let activeSection: 'project' | 'team' | 'llm' | 'general' = 'project';
   let saveStatus = '';
 
   // 1. Projects State
@@ -44,6 +44,16 @@
     is_active: false,
   };
 
+  // 5. System Execution & Reliability Settings
+  let systemSettings: any = {
+    subagent_max_steps: 15,
+    root_max_steps: 25,
+    loop_protection_enabled: true,
+    loop_detection_threshold: 3,
+    llm_max_retries: 3,
+    llm_retry_delay_sec: 3,
+  };
+
   const allAvailableSkills = [
     { id: 'read_file', name: 'Read File', desc: 'Чтение файлов в рабочей директории' },
     { id: 'write_file', name: 'Write File', desc: 'Создание и редактирование файлов' },
@@ -65,6 +75,7 @@
       loadTeams(),
       loadAgents(),
       loadLLMProfiles(),
+      loadSystemSettings(),
     ]);
   }
 
@@ -429,6 +440,53 @@
       is_active: false,
     };
   }
+
+  // --- System Settings API ---
+  async function loadSystemSettings() {
+    try {
+      const res = await fetch('/api/settings');
+      if (res.ok) {
+        const data = await res.json();
+        systemSettings = {
+          subagent_max_steps: data.subagent_max_steps ?? 15,
+          root_max_steps: data.root_max_steps ?? 25,
+          loop_protection_enabled: data.loop_protection_enabled ?? true,
+          loop_detection_threshold: data.loop_detection_threshold ?? 3,
+          llm_max_retries: data.llm_max_retries ?? 3,
+          llm_retry_delay_sec: data.llm_retry_delay_sec ?? 3,
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to load system settings:', e);
+    }
+  }
+
+  async function saveSystemSettings() {
+    try {
+      saveStatus = 'Сохранение параметров...';
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subagent_max_steps: Number(systemSettings.subagent_max_steps),
+          root_max_steps: Number(systemSettings.root_max_steps),
+          loop_protection_enabled: Boolean(systemSettings.loop_protection_enabled),
+          loop_detection_threshold: Number(systemSettings.loop_detection_threshold),
+          llm_max_retries: Number(systemSettings.llm_max_retries),
+          llm_retry_delay_sec: Number(systemSettings.llm_retry_delay_sec),
+        }),
+      });
+      if (res.ok) {
+        saveStatus = '✓ Параметры успешно сохранены!';
+        await loadSystemSettings();
+        setTimeout(() => saveStatus = '', 2000);
+      } else {
+        saveStatus = 'Ошибка сохранения параметров';
+      }
+    } catch (e) {
+      saveStatus = 'Ошибка сети';
+    }
+  }
 </script>
 
 {#if isOpen}
@@ -440,7 +498,7 @@
           <span class="text-xl">⚙️</span>
           <div>
             <h2 class="font-bold text-base text-slate-100">Управление проектами, командами и окружением</h2>
-            <p class="text-[11px] text-slate-400">Изоляция проектов по отдельным папкам, настройка состава саб-агентов, матрица прав и LLM</p>
+            <p class="text-[11px] text-slate-400">Изоляция проектов, матрица скилов саб-агентов, LLM провайдеры и параметры надежности</p>
           </div>
         </div>
         <button on:click={onClose} class="text-slate-500 hover:text-slate-300 text-lg cursor-pointer">✕</button>
@@ -468,6 +526,13 @@
         >
           <span>🤖</span>
           <span>LLM Провайдеры ({profiles.length})</span>
+        </button>
+        <button
+          on:click={() => activeSection = 'general'}
+          class="py-3 px-4 border-b-2 font-medium transition flex items-center gap-1.5 cursor-pointer {activeSection === 'general' ? 'border-indigo-500 text-indigo-400' : 'border-transparent text-slate-400 hover:text-slate-200'}"
+        >
+          <span>⚙️</span>
+          <span>Параметры и Защита</span>
         </button>
       </div>
 
@@ -1031,6 +1096,186 @@
                   </button>
                 {/if}
               </div>
+            </div>
+          </div>
+
+        <!-- ================= SECTION 4: GENERAL & EXECUTION SETTINGS ================= -->
+        {:else if activeSection === 'general'}
+          <div class="space-y-6">
+            <!-- Header Banner -->
+            <div class="p-4 rounded-xl border border-slate-800 bg-slate-950/70 flex items-start justify-between">
+              <div>
+                <h3 class="font-bold text-sm text-slate-100 flex items-center gap-2">
+                  <span>⚙️</span>
+                  <span>Параметры выполнения, лимиты и защита от сбоев</span>
+                </h3>
+                <p class="text-[11px] text-slate-400 mt-1">
+                  Глобальная конфигурация ReAct-циклов саб-агентов, защита от бесконечного зацикливания и параметры повтора запросов к LLM API.
+                </p>
+              </div>
+              <button
+                type="button"
+                on:click={saveSystemSettings}
+                class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold transition text-xs shadow-md cursor-pointer flex items-center gap-1.5 shrink-0"
+              >
+                <span>💾</span>
+                <span>Сохранить параметры</span>
+              </button>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <!-- Card 1: Subagent & Root Agent Step Limits -->
+              <div class="p-4 rounded-xl border border-slate-800 bg-slate-950/60 space-y-4">
+                <div class="flex items-center gap-2 pb-2 border-b border-slate-800">
+                  <span class="text-base">🪜</span>
+                  <div>
+                    <h4 class="font-bold text-xs text-slate-200">Лимиты шагов агентов (ReAct Step Limits)</h4>
+                    <p class="text-[10px] text-slate-400">Ограничение количества итераций «Мысль → Инструмент → Ответ»</p>
+                  </div>
+                </div>
+
+                <div>
+                  <label for="subagent-steps-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                    <span class="text-indigo-400 font-semibold">Лимит шагов сабагента:</span>
+                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{systemSettings.subagent_max_steps} шагов</span>
+                  </label>
+                  <input
+                    id="subagent-steps-input"
+                    type="number"
+                    min="1"
+                    max="100"
+                    bind:value={systemSettings.subagent_max_steps}
+                    class="w-full bg-slate-950 border border-indigo-700/60 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400 ring-1 ring-indigo-500/20"
+                  />
+                  <p class="text-[10px] text-slate-500 mt-1">
+                    Максимальное число шагов выполнения для вызываемых саб-агентов (backend, frontend, qa, techlead). Предотвращает перерасход токенов на узких подзадачах.
+                  </p>
+                </div>
+
+                <div>
+                  <label for="root-steps-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                    <span>Лимит шагов главного агента:</span>
+                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{systemSettings.root_max_steps} шагов</span>
+                  </label>
+                  <input
+                    id="root-steps-input"
+                    type="number"
+                    min="1"
+                    max="100"
+                    bind:value={systemSettings.root_max_steps}
+                    class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500"
+                  />
+                  <p class="text-[10px] text-slate-500 mt-1">
+                    Максимальное число шагов для корневого агента сессии (Project Manager).
+                  </p>
+                </div>
+              </div>
+
+              <!-- Card 2: Anti-Loop Protection -->
+              <div class="p-4 rounded-xl border border-slate-800 bg-slate-950/60 space-y-4">
+                <div class="flex items-center gap-2 pb-2 border-b border-slate-800">
+                  <span class="text-base">🔄</span>
+                  <div>
+                    <h4 class="font-bold text-xs text-slate-200">Защита от зацикливания (Anti-Loop Protection)</h4>
+                    <p class="text-[10px] text-slate-400">Предотвращение повторных вызовов одинаковых инструментов</p>
+                  </div>
+                </div>
+
+                <div class="flex items-center justify-between bg-slate-900/80 p-3 rounded-lg border border-slate-800">
+                  <div>
+                    <span class="font-medium text-slate-200 block text-xs">Включить защиту от зацикливания</span>
+                    <span class="text-[10px] text-slate-400">Останавливать агента при выявлении циклов повторений</span>
+                  </div>
+                  <label class="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      bind:checked={systemSettings.loop_protection_enabled}
+                      class="sr-only peer"
+                    />
+                    <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                  </label>
+                </div>
+
+                <div>
+                  <label for="loop-threshold-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                    <span>Порог повторений для детекции цикла:</span>
+                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{systemSettings.loop_detection_threshold} повтора</span>
+                  </label>
+                  <input
+                    id="loop-threshold-input"
+                    type="number"
+                    min="2"
+                    max="10"
+                    bind:value={systemSettings.loop_detection_threshold}
+                    disabled={!systemSettings.loop_protection_enabled}
+                    class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                  />
+                  <p class="text-[10px] text-slate-500 mt-1">
+                    При {systemSettings.loop_detection_threshold - 1} одинаковых вызовах агенту высылается предупреждение; при достижении {systemSettings.loop_detection_threshold} повторов шаг принудительно прерывается.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card 3: LLM API Error Retry & Pause Backoff -->
+            <div class="p-4 rounded-xl border border-slate-800 bg-slate-950/60 space-y-4">
+              <div class="flex items-center gap-2 pb-2 border-b border-slate-800">
+                <span class="text-base">🔁</span>
+                <div>
+                  <h4 class="font-bold text-xs text-slate-200">Повтор запросов к LLM API (Retry & Pause Mechanism)</h4>
+                  <p class="text-[10px] text-slate-400">Автоматический повтор запроса при сбоях сети, таймаутах или ошибках 429 / 5xx от нейросети</p>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label for="llm-retries-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                    <span>Количество повторов запроса (Max Retries):</span>
+                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{systemSettings.llm_max_retries} попытки</span>
+                  </label>
+                  <input
+                    id="llm-retries-input"
+                    type="number"
+                    min="0"
+                    max="10"
+                    bind:value={systemSettings.llm_max_retries}
+                    class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500"
+                  />
+                  <p class="text-[10px] text-slate-500 mt-1">
+                    Сколько раз перезапрашивать ответ у LLM API при получении ошибки (0 — отключить повторы).
+                  </p>
+                </div>
+
+                <div>
+                  <label for="llm-delay-input" class="block text-slate-300 font-medium mb-1 flex items-center justify-between">
+                    <span>Пауза между повторами (Retry Delay):</span>
+                    <span class="text-[11px] font-mono text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">{systemSettings.llm_retry_delay_sec} сек.</span>
+                  </label>
+                  <input
+                    id="llm-delay-input"
+                    type="number"
+                    min="1"
+                    max="60"
+                    bind:value={systemSettings.llm_retry_delay_sec}
+                    class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-500"
+                  />
+                  <p class="text-[10px] text-slate-500 mt-1">
+                    Длительность паузы в секундах перед следующей попыткой запроса к провайдеру LLM.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Bottom Save Bar -->
+            <div class="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                on:click={saveSystemSettings}
+                class="px-5 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold transition text-xs shadow-md cursor-pointer flex items-center gap-1.5"
+              >
+                <span>💾</span>
+                <span>Сохранить параметры системы</span>
+              </button>
             </div>
           </div>
         {/if}

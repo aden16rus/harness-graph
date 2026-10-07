@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -99,10 +100,12 @@ type ChatResponse struct {
 }
 
 type Client struct {
-	baseURL    string
-	apiKey     string
-	httpClient *http.Client
-	mu         sync.RWMutex
+	baseURL       string
+	apiKey        string
+	httpClient    *http.Client
+	maxRetries    int
+	retryDelaySec int
+	mu            sync.RWMutex
 }
 
 func NewClient(baseURL, apiKey string) *Client {
@@ -112,12 +115,33 @@ func NewClient(baseURL, apiKey string) *Client {
 	baseURL = strings.TrimRight(baseURL, "/")
 
 	return &Client{
-		baseURL: baseURL,
-		apiKey:  apiKey,
+		baseURL:       baseURL,
+		apiKey:        apiKey,
+		maxRetries:    3,
+		retryDelaySec: 3,
 		httpClient: &http.Client{
 			Timeout: 0, // Streaming requests require no overall client timeout; use context
 		},
 	}
+}
+
+func (c *Client) SetRetryConfig(maxRetries int, retryDelaySec int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	if retryDelaySec < 1 {
+		retryDelaySec = 1
+	}
+	c.maxRetries = maxRetries
+	c.retryDelaySec = retryDelaySec
+}
+
+func (c *Client) GetRetryConfig() (int, int) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.maxRetries, c.retryDelaySec
 }
 
 func (c *Client) UpdateConfig(baseURL, apiKey string) {
@@ -137,7 +161,7 @@ func (c *Client) GetBaseURL() string {
 	return c.baseURL
 }
 
-// ChatStream initiates streaming LLM chat completion
+// ChatStream initiates streaming LLM chat completion with retry and pause mechanism
 func (c *Client) ChatStream(
 	ctx context.Context,
 	req ChatRequest,
@@ -228,148 +252,201 @@ func (c *Client) ChatStream(
 	c.mu.RLock()
 	currentBaseURL := c.baseURL
 	currentAPIKey := c.apiKey
+	maxRetries := c.maxRetries
+	retryDelaySec := c.retryDelaySec
 	c.mu.RUnlock()
 
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	if retryDelaySec < 1 {
+		retryDelaySec = 1
+	}
+	retryDelay := time.Duration(retryDelaySec) * time.Second
+
 	url := fmt.Sprintf("%s/chat/completions", currentBaseURL)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create http request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	if currentAPIKey != "" {
-		httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", currentAPIKey))
-	}
-
-	startTime := time.Now()
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("http request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	reader := bufio.NewReader(resp.Body)
 
 	var (
-		firstTokenReceived       bool
-		ttft                     time.Duration
-		contentBuilder           strings.Builder
+		lastErr                 error
+		firstTokenReceived      bool
+		ttft                    time.Duration
+		contentBuilder          strings.Builder
 		reasoningContentBuilder strings.Builder
-		toolCallsMap             = make(map[int]*ToolCall)
-		finishReason             string
-		usage                    *TokenUsage
+		toolCallsMap            = make(map[int]*ToolCall)
+		finishReason            string
+		usage                   *TokenUsage
+		startTime               time.Time
+		totalLatency            time.Duration
 	)
 
-	for {
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			return nil, fmt.Errorf("error reading SSE stream: %w", readErr)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			log.Printf("[LLM Retry] Attempt %d/%d paused for %v after error: %v\n", attempt, maxRetries, retryDelay, lastErr)
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context canceled during LLM retry: %w", ctx.Err())
+			case <-time.After(retryDelay):
+			}
 		}
 
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				break
-			}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create http request: %w", err)
+		}
 
-			var event StreamEvent
-			if err := json.Unmarshal([]byte(data), &event); err != nil {
-				// Some engines output malformed chunk, continue
-				continue
-			}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		if currentAPIKey != "" {
+			httpReq.Header.Set("Authorization", fmt.Sprintf("Bearer %s", currentAPIKey))
+		}
 
-			if event.Usage != nil {
-				usage = event.Usage
-			}
+		startTime = time.Now()
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("http request failed: %w", err)
+			continue
+		}
 
-			if len(event.Choices) > 0 {
-				choice := event.Choices[0]
-				if choice.FinishReason != nil {
-					finishReason = *choice.FinishReason
+		if resp.StatusCode != http.StatusOK {
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = fmt.Errorf("LLM API returned status %d: %s", resp.StatusCode, string(bodyBytes))
+			continue
+		}
+
+		// Reset buffers for reading response
+		firstTokenReceived = false
+		contentBuilder.Reset()
+		reasoningContentBuilder.Reset()
+		toolCallsMap = make(map[int]*ToolCall)
+		finishReason = ""
+		usage = nil
+
+		reader := bufio.NewReader(resp.Body)
+		streamErr := func() error {
+			defer resp.Body.Close()
+			for {
+				line, readErr := reader.ReadString('\n')
+				if readErr != nil && !errors.Is(readErr, io.EOF) {
+					return fmt.Errorf("error reading SSE stream: %w", readErr)
 				}
 
-				deltaText := choice.Delta.Content
-				reasoningDelta := choice.Delta.ReasoningContent
-				if reasoningDelta == "" {
-					reasoningDelta = choice.Delta.Thought
-				}
-
-				if (deltaText != "" || reasoningDelta != "") && !firstTokenReceived {
-					firstTokenReceived = true
-					ttft = time.Since(startTime)
-				}
-
-				if deltaText != "" {
-					contentBuilder.WriteString(deltaText)
-				}
-				if reasoningDelta != "" {
-					reasoningContentBuilder.WriteString(reasoningDelta)
-				}
-
-				// Accumulate tool calls without duplicating function names
-				for _, tc := range choice.Delta.ToolCalls {
-					idx := 0
-					if tc.Index != nil {
-						idx = *tc.Index
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "data: ") {
+					data := strings.TrimPrefix(line, "data: ")
+					if data == "[DONE]" {
+						break
 					}
 
-					existing, ok := toolCallsMap[idx]
-					if !ok {
-						toolCallsMap[idx] = &ToolCall{
-							ID:   tc.ID,
-							Type: tc.Type,
-							Function: ToolCallFunction{
-								Name:      tc.Function.Name,
-								Arguments: tc.Function.Arguments,
-							},
+					var event StreamEvent
+					if err := json.Unmarshal([]byte(data), &event); err != nil {
+						// Some engines output malformed chunk, continue
+						continue
+					}
+
+					if event.Usage != nil {
+						usage = event.Usage
+					}
+
+					if len(event.Choices) > 0 {
+						choice := event.Choices[0]
+						if choice.FinishReason != nil {
+							finishReason = *choice.FinishReason
 						}
-					} else {
-						if tc.ID != "" && existing.ID == "" {
-							existing.ID = tc.ID
+
+						deltaText := choice.Delta.Content
+						reasoningDelta := choice.Delta.ReasoningContent
+						if reasoningDelta == "" {
+							reasoningDelta = choice.Delta.Thought
 						}
-						if tc.Type != "" {
-							existing.Type = tc.Type
+
+						if (deltaText != "" || reasoningDelta != "") && !firstTokenReceived {
+							firstTokenReceived = true
+							ttft = time.Since(startTime)
 						}
-						if tc.Function.Name != "" {
-							if existing.Function.Name == "" {
-								existing.Function.Name = tc.Function.Name
-							} else if existing.Function.Name == tc.Function.Name {
-								// Repeated name from upstream chunk, ignore duplicate
-							} else if strings.HasPrefix(tc.Function.Name, existing.Function.Name) {
-								// Growing full name
-								existing.Function.Name = tc.Function.Name
-							} else if !strings.Contains(existing.Function.Name, tc.Function.Name) {
-								// Fragment delta
-								existing.Function.Name += tc.Function.Name
+
+						if deltaText != "" {
+							contentBuilder.WriteString(deltaText)
+						}
+						if reasoningDelta != "" {
+							reasoningContentBuilder.WriteString(reasoningDelta)
+						}
+
+						// Accumulate tool calls without duplicating function names
+						for _, tc := range choice.Delta.ToolCalls {
+							idx := 0
+							if tc.Index != nil {
+								idx = *tc.Index
+							}
+
+							existing, ok := toolCallsMap[idx]
+							if !ok {
+								toolCallsMap[idx] = &ToolCall{
+									ID:   tc.ID,
+									Type: tc.Type,
+									Function: ToolCallFunction{
+										Name:      tc.Function.Name,
+										Arguments: tc.Function.Arguments,
+									},
+								}
+							} else {
+								if tc.ID != "" && existing.ID == "" {
+									existing.ID = tc.ID
+								}
+								if tc.Type != "" {
+									existing.Type = tc.Type
+								}
+								if tc.Function.Name != "" {
+									if existing.Function.Name == "" {
+										existing.Function.Name = tc.Function.Name
+									} else if existing.Function.Name == tc.Function.Name {
+										// Repeated name from upstream chunk, ignore duplicate
+									} else if strings.HasPrefix(tc.Function.Name, existing.Function.Name) {
+										// Growing full name
+										existing.Function.Name = tc.Function.Name
+									} else if !strings.Contains(existing.Function.Name, tc.Function.Name) {
+										// Fragment delta
+										existing.Function.Name += tc.Function.Name
+									}
+								}
+								if tc.Function.Arguments != "" {
+									existing.Function.Arguments += tc.Function.Arguments
+								}
 							}
 						}
-						if tc.Function.Arguments != "" {
-							existing.Function.Arguments += tc.Function.Arguments
+
+						if onChunk != nil {
+							if err := onChunk(deltaText, reasoningDelta, choice.Delta.ToolCalls); err != nil {
+								return fmt.Errorf("onChunk callback failed: %w", err)
+							}
 						}
 					}
 				}
 
-				if onChunk != nil {
-					if err := onChunk(deltaText, reasoningDelta, choice.Delta.ToolCalls); err != nil {
-						return nil, fmt.Errorf("onChunk callback failed: %w", err)
-					}
+				if readErr != nil {
+					break
 				}
 			}
+			return nil
+		}()
+
+		if streamErr != nil {
+			if !firstTokenReceived && attempt < maxRetries {
+				lastErr = streamErr
+				continue
+			}
+			return nil, streamErr
 		}
 
-		if readErr != nil {
-			break
-		}
+		totalLatency = time.Since(startTime)
+		lastErr = nil
+		break
 	}
 
-	totalLatency := time.Since(startTime)
+	if lastErr != nil {
+		return nil, fmt.Errorf("LLM API request failed after %d retries: %w", maxRetries, lastErr)
+	}
+
 	if !firstTokenReceived {
 		ttft = totalLatency
 	}
