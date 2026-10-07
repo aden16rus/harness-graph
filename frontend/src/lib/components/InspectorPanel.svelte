@@ -511,18 +511,23 @@
                 <!-- Dedicated Body Views by Tool Type -->
                 <div class="mt-3 pt-2.5 border-t border-slate-800/80 space-y-2.5">
                   {#if msg.name === 'write_file'}
-                    <!-- 1. File Writing View: Formatted Code Content -->
+                    <!-- 1. File Writing View: Collapsible Code Content -->
                     <div class="space-y-1.5">
-                      <div class="flex items-center justify-between text-[11px] text-slate-400 font-mono bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800">
-                        <span class="text-emerald-400 font-bold">📄 {msg.args?.path || 'file'}</span>
-                        <span class="text-slate-500">{msg.args?.content ? msg.args.content.length : 0} символов</span>
-                      </div>
-                      {#if msg.args?.content}
-                        <div class="rounded-lg bg-slate-950 border border-slate-800 p-2.5 font-mono text-[11px] text-emerald-300 max-h-64 overflow-y-auto whitespace-pre-wrap select-text leading-relaxed">
-                          {msg.args.content}
-                        </div>
-                      {/if}
-                      <div class="text-[11px] font-mono font-medium flex items-center gap-1.5 {msg.error ? 'text-rose-400' : 'text-emerald-400'}">
+                      <details open class="group/content rounded-lg border border-slate-800 bg-slate-900/60 overflow-hidden">
+                        <summary class="cursor-pointer list-none px-2.5 py-1.5 bg-slate-900/90 hover:bg-slate-900 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono select-none">
+                          <div class="flex items-center gap-2 truncate">
+                            <span class="text-emerald-400 font-bold">📄 {msg.args?.path || 'file'}</span>
+                            <span class="text-slate-500 text-[10px]">({msg.args?.content ? msg.args.content.length : 0} симв.)</span>
+                          </div>
+                          <span class="text-slate-500 group-open/content:rotate-180 transition-transform text-[10px]">▼</span>
+                        </summary>
+                        {#if msg.args?.content}
+                          <div class="p-2.5 bg-slate-950 font-mono text-[11px] text-emerald-300 max-h-64 overflow-y-auto whitespace-pre-wrap select-text leading-relaxed">
+                            {msg.args.content}
+                          </div>
+                        {/if}
+                      </details>
+                      <div class="text-[11px] font-mono font-medium flex items-center gap-1.5 {msg.error ? 'text-rose-400' : 'text-emerald-400'} px-1">
                         <span>{msg.error ? '❌' : '✓'}</span>
                         <span>{msg.error || msg.output || 'Файл успешно сохранен'}</span>
                       </div>
@@ -531,22 +536,26 @@
                   {:else if msg.name === 'host_exec' || msg.name === 'docker_exec'}
                     <!-- 2. Terminal View for Shell / Docker Commands -->
                     {@const term = getCleanTerminalOutput(msg.output || msg.text || '')}
-                    <div class="rounded-lg overflow-hidden border border-slate-800 bg-black font-mono shadow-md">
-                      <div class="bg-slate-900/90 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[10px]">
-                        <div class="flex items-center gap-2">
-                          <div class="flex items-center gap-1">
+                    <details open class="group/term rounded-lg overflow-hidden border border-slate-800 bg-black font-mono shadow-md">
+                      <summary class="cursor-pointer list-none bg-slate-900/90 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[10px] select-none hover:bg-slate-900">
+                        <div class="flex items-center gap-2 truncate">
+                          <div class="flex items-center gap-1 shrink-0">
                             <span class="w-2.5 h-2.5 rounded-full bg-rose-500/80"></span>
                             <span class="w-2.5 h-2.5 rounded-full bg-amber-500/80"></span>
                             <span class="w-2.5 h-2.5 rounded-full bg-emerald-500/80"></span>
                           </div>
-                          <span class="text-slate-400 font-semibold">{msg.name === 'docker_exec' ? '🐳 docker: ' + (msg.args?.container || 'default') : '💻 host: /workspace'}</span>
+                          <span class="text-slate-400 font-semibold shrink-0">{msg.name === 'docker_exec' ? '🐳 docker: ' + (msg.args?.container || 'default') : '💻 host: /workspace'}</span>
+                          <span class="text-slate-500 truncate max-w-[180px] font-mono">$ {getCommandString(msg.args)}</span>
                         </div>
-                        {#if term.exitCode !== undefined}
-                          <span class="px-1.5 py-0.2 rounded font-mono text-[9px] {term.exitCode === 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
-                            Exit: {term.exitCode}
-                          </span>
-                        {/if}
-                      </div>
+                        <div class="flex items-center gap-2 shrink-0">
+                          {#if term.exitCode !== undefined}
+                            <span class="px-1.5 py-0.2 rounded font-mono text-[9px] {term.exitCode === 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'}">
+                              Exit: {term.exitCode}
+                            </span>
+                          {/if}
+                          <span class="text-slate-500 group-open/term:rotate-180 transition-transform text-[10px]">▼</span>
+                        </div>
+                      </summary>
 
                       <div class="p-3 text-[11px] select-text">
                         <div class="flex items-center gap-2 text-indigo-400 font-bold mb-1.5">
@@ -571,7 +580,7 @@
                           {/if}
                         {/if}
                       </div>
-                    </div>
+                    </details>
 
                   {:else if msg.name === 'call_sub_agent'}
                     <!-- 3. Sub-Agent Delegation Card -->
@@ -606,61 +615,74 @@
                     </div>
 
                   {:else if msg.name === 'list_dir'}
-                    <!-- 4. Directory Listing File Tree / Grid -->
+                    <!-- 4. Directory Listing File Tree / Grid (Collapsible) -->
                     {@const dirData = parseListDirOutput(msg.output || msg.text || '')}
                     <div class="space-y-1.5">
-                      <div class="text-[11px] font-mono text-cyan-400 font-semibold bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800">
-                        📁 Директория: {msg.args?.path || '.'}
-                      </div>
-                      {#if isRunning}
-                        <div class="text-amber-400 animate-pulse text-xs py-2">Чтение файловой структуры...</div>
-                      {:else if dirData.items.length > 0}
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-64 overflow-y-auto p-1 bg-slate-900/40 rounded-lg border border-slate-800">
-                          {#each dirData.items as item}
-                            <div class="flex items-center justify-between p-1.5 rounded bg-slate-950/70 border border-slate-800/60 text-xs">
-                              <div class="flex items-center gap-1.5 truncate">
-                                <span>{item.type === 'dir' ? '📁' : '📄'}</span>
-                                <span class="{item.type === 'dir' ? 'text-cyan-300 font-semibold' : 'text-slate-200 font-mono'} truncate">{item.name}</span>
+                      <details open class="group/content rounded-lg border border-slate-800 bg-slate-900/60 overflow-hidden">
+                        <summary class="cursor-pointer list-none px-2.5 py-1.5 bg-slate-900/90 hover:bg-slate-900 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono select-none">
+                          <div class="flex items-center gap-2 truncate">
+                            <span class="text-cyan-400 font-bold">📁 {msg.args?.path || '.'}</span>
+                            <span class="text-slate-500 text-[10px]">({dirData.items.length} элементов)</span>
+                          </div>
+                          <span class="text-slate-500 group-open/content:rotate-180 transition-transform text-[10px]">▼</span>
+                        </summary>
+
+                        {#if isRunning}
+                          <div class="text-amber-400 animate-pulse text-xs p-3">Чтение файловой структуры...</div>
+                        {:else if dirData.items.length > 0}
+                          <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-64 overflow-y-auto p-2 bg-slate-950">
+                            {#each dirData.items as item}
+                              <div class="flex items-center justify-between p-1.5 rounded bg-slate-900/80 border border-slate-800/80 text-xs">
+                                <div class="flex items-center gap-1.5 truncate">
+                                  <span>{item.type === 'dir' ? '📁' : '📄'}</span>
+                                  <span class="{item.type === 'dir' ? 'text-cyan-300 font-semibold' : 'text-slate-200 font-mono'} truncate">{item.name}</span>
+                                </div>
+                                {#if item.size}
+                                  <span class="text-[10px] text-slate-400 font-mono shrink-0 ml-1">{item.size}</span>
+                                {/if}
                               </div>
-                              {#if item.size}
-                                <span class="text-[10px] text-slate-400 font-mono shrink-0 ml-1">{item.size}</span>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      {:else}
-                        <pre class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[11px] text-slate-300 max-h-48 overflow-y-auto">{msg.output || msg.text || 'Каталог пуст.'}</pre>
-                      {/if}
+                            {/each}
+                          </div>
+                        {:else}
+                          <pre class="bg-slate-950 p-2 font-mono text-[11px] text-slate-400 max-h-48 overflow-y-auto">{msg.output || msg.text || 'Каталог пуст.'}</pre>
+                        {/if}
+                      </details>
                     </div>
 
                   {:else if msg.name === 'read_file'}
-                    <!-- 5. Formatted File Reading with Real Line Numbers -->
+                    <!-- 5. Formatted File Reading with Real Line Numbers (Collapsible) -->
                     {@const readData = parseReadFileLines(msg.output || msg.text || '')}
                     <div class="space-y-1.5">
-                      <div class="text-[11px] font-mono text-cyan-400 font-semibold bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800 flex items-center justify-between">
-                        <span>📄 {msg.args?.path || 'file'}</span>
-                        {#if msg.args?.start_line}
-                          <span class="text-[10px] text-slate-400">строки {msg.args.start_line}–{msg.args.end_line || ''}</span>
-                        {/if}
-                      </div>
+                      <details open class="group/content rounded-lg border border-slate-800 bg-slate-900/60 overflow-hidden">
+                        <summary class="cursor-pointer list-none px-2.5 py-1.5 bg-slate-900/90 hover:bg-slate-900 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono select-none">
+                          <div class="flex items-center gap-2 truncate">
+                            <span class="text-cyan-400 font-bold">📄 {msg.args?.path || 'file'}</span>
+                            {#if msg.args?.start_line}
+                              <span class="text-slate-400 text-[10px]">строки {msg.args.start_line}–{msg.args.end_line || ''}</span>
+                            {/if}
+                            <span class="text-slate-500 text-[10px]">({readData.lines.length} строк)</span>
+                          </div>
+                          <span class="text-slate-500 group-open/content:rotate-180 transition-transform text-[10px]">▼</span>
+                        </summary>
 
-                      {#if isRunning}
-                        <div class="text-amber-400 animate-pulse text-xs py-2">Чтение файла...</div>
-                      {:else if readData.lines.length > 0}
-                        <div class="rounded-lg bg-slate-950 border border-slate-800 font-mono text-[11px] max-h-72 overflow-y-auto p-2 select-text leading-relaxed">
-                          {#each readData.lines as line}
-                            <div class="flex items-start gap-2.5 hover:bg-slate-900/50 rounded px-1">
-                              <span class="w-9 text-right text-slate-500 select-none shrink-0 font-mono text-[10px]">{line.num}</span>
-                              <span class="text-slate-200 whitespace-pre font-mono flex-1">{line.code}</span>
-                            </div>
-                          {/each}
-                          {#if readData.footer}
-                            <div class="mt-2 pt-1 border-t border-slate-800 text-[10px] text-amber-400 font-mono">{readData.footer}</div>
-                          {/if}
-                        </div>
-                      {:else}
-                        <pre class="bg-slate-900 p-2 rounded border border-slate-800 font-mono text-[11px] text-slate-300 max-h-48 overflow-y-auto">{msg.output || msg.text || 'Файл пуст.'}</pre>
-                      {/if}
+                        {#if isRunning}
+                          <div class="text-amber-400 animate-pulse text-xs p-3">Чтение файла...</div>
+                        {:else if readData.lines.length > 0}
+                          <div class="bg-slate-950 font-mono text-[11px] max-h-72 overflow-y-auto p-2 select-text leading-relaxed">
+                            {#each readData.lines as line}
+                              <div class="flex items-start gap-2.5 hover:bg-slate-900/50 rounded px-1">
+                                <span class="w-9 text-right text-slate-500 select-none shrink-0 font-mono text-[10px]">{line.num}</span>
+                                <span class="text-slate-200 whitespace-pre font-mono flex-1">{line.code}</span>
+                              </div>
+                            {/each}
+                            {#if readData.footer}
+                              <div class="mt-2 pt-1 border-t border-slate-800 text-[10px] text-amber-400 font-mono">{readData.footer}</div>
+                            {/if}
+                          </div>
+                        {:else}
+                          <pre class="bg-slate-950 p-2 font-mono text-[11px] text-slate-400 max-h-48 overflow-y-auto">{msg.output || msg.text || 'Файл пуст.'}</pre>
+                        {/if}
+                      </details>
                     </div>
 
                   {:else if msg.name === 'todo_write'}
@@ -712,7 +734,7 @@
                 </div>
               </details>
 
-            {:else if msg.role === 'assistant'}
+            {:else if msg.role === 'assistant' && msg.text && msg.text.trim() !== ''}
               <!-- Assistant Step / Output -->
               <div class="rounded-xl p-3 text-xs leading-relaxed bg-slate-800/70 border border-slate-700/60 mr-2 text-slate-200">
                 <div class="flex items-center justify-between mb-1.5 text-[10px] uppercase font-bold tracking-wider text-cyan-400">

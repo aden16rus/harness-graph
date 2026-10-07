@@ -102,11 +102,28 @@ final class ReActEngine
             }
 
             if ($role === 'tool') {
-                $callId = (string)($item['call_id'] ?? ('call_' . $i));
-                $name = (string)($item['name'] ?? 'tool');
-                $content = (string)($item['text'] ?? ($item['output'] ?? 'OK'));
-                $history[] = Message::tool($callId, $content, $name);
-                $i++;
+                // If tools appear without preceding assistant turn in dialog, gather consecutive tools and synthesize assistant turn with tool_calls
+                $consecutiveTools = [];
+                $synthesizedToolCalls = [];
+                $peek = $i;
+                while ($peek < $count && ($dialog[$peek]['role'] ?? '') === 'tool') {
+                    $tItem = $dialog[$peek];
+                    $callId = (string)($tItem['call_id'] ?? ('call_' . $peek));
+                    $name = (string)($tItem['name'] ?? 'tool');
+                    $args = $tItem['args'] ?? [];
+                    $synthesizedToolCalls[] = new ToolCall(id: $callId, name: $name, arguments: is_array($args) ? $args : []);
+                    $consecutiveTools[] = $tItem;
+                    $peek++;
+                }
+
+                $history[] = Message::assistant('', $synthesizedToolCalls);
+                foreach ($consecutiveTools as $idxOffset => $tItem) {
+                    $callId = (string)($tItem['call_id'] ?? ('call_' . ($i + $idxOffset)));
+                    $name = (string)($tItem['name'] ?? 'tool');
+                    $content = (string)($tItem['text'] ?? ($tItem['output'] ?? 'OK'));
+                    $history[] = Message::tool($callId, $content, $name);
+                }
+                $i = $peek;
                 continue;
             }
 
@@ -379,8 +396,8 @@ final class ReActEngine
                 ]);
             }
 
-            // Record assistant turn in node dialog (even if text is empty when calling tools)
-            if ($content !== '' || !empty($parsedToolCalls)) {
+            // Record assistant turn in node dialog only when there is non-empty message content
+            if ($content !== '') {
                 $node->dialog[] = [
                     'role' => 'assistant',
                     'step' => $step,
@@ -426,7 +443,14 @@ final class ReActEngine
                     $argsJson = json_encode($tc->arguments, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                     $turnSignatures[] = $tc->name . ':' . md5((string)$argsJson);
                     if (isset($tc->arguments['path']) && trim((string)$tc->arguments['path']) !== '') {
-                        $callPaths[] = $tc->name . ':' . trim((string)$tc->arguments['path']);
+                        $pStr = trim((string)$tc->arguments['path']);
+                        $rangeKey = '';
+                        if ($tc->name === 'read_file') {
+                            $start = $tc->arguments['start_line'] ?? ($tc->arguments['from_line'] ?? ($tc->arguments['offset'] ?? '1'));
+                            $end = $tc->arguments['end_line'] ?? ($tc->arguments['to_line'] ?? ($tc->arguments['limit'] ?? ($tc->arguments['max_lines'] ?? 'all')));
+                            $rangeKey = "@L{$start}-{$end}";
+                        }
+                        $callPaths[] = $tc->name . ':' . $pStr . $rangeKey;
                     }
                 }
                 $currentTurnSignature = implode('|', $turnSignatures);
