@@ -920,9 +920,9 @@
                 <textarea
                   id="proj-prompt-input"
                   bind:value={currentProject.project_prompt}
-                  rows="3"
+                  rows="4"
                   placeholder="Опишите требования к коду, архитектурные соглашения, специфику окружения или правила для всех задач внутри этого проекта..."
-                  class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-500 resize-none font-sans"
+                  class="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-slate-100 text-xs focus:outline-none focus:border-indigo-500 resize-y min-h-[120px] max-h-[600px] leading-relaxed font-sans"
                 ></textarea>
                 <p class="text-[10px] text-slate-500 mt-1">
                   * Этот промпт автоматически добавляется в системный контекст каждого саб-агента при выполнении любых задач в рамках данного проекта.
@@ -1163,9 +1163,9 @@
                     <textarea
                       id="new-agent-prompt"
                       bind:value={newAgent.system_prompt}
-                      rows="3"
+                      rows="4"
                       placeholder="Опишите, какие задачи решает этот саб-агент, какой стек использует и как формулирует ответы..."
-                      class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-400 resize-none font-sans"
+                      class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-100 text-xs focus:outline-none focus:border-indigo-400 resize-y min-h-[120px] max-h-[600px] leading-relaxed font-sans"
                     ></textarea>
                   </div>
 
@@ -1319,8 +1319,8 @@
                         id={`agent-prompt-${agent.id}`}
                         bind:value={agent.system_prompt}
                         on:blur={() => saveAgent(agent)}
-                        rows="3"
-                        class="w-full bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-slate-200 text-xs focus:outline-none focus:border-indigo-500 resize-none font-sans"
+                        rows="4"
+                        class="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-slate-200 text-xs focus:outline-none focus:border-indigo-500 resize-y min-h-[120px] max-h-[600px] leading-relaxed font-sans"
                       ></textarea>
                     </div>
 
@@ -1562,9 +1562,9 @@
                   id="global-prompt-input"
                   bind:value={systemSettings.global_system_prompt}
                   on:blur={handleAutoSaveSystemSettings}
-                  rows="4"
+                  rows="5"
                   placeholder="Например: Всегда пишите чистый код с комментариями на русском языке, проверяйте граничные условия, строго соблюдайте архитектурные паттерны, не удаляйте важные файлы без подтверждения человека..."
-                  class="w-full bg-slate-950 border border-indigo-800/60 rounded-lg p-2.5 text-slate-100 text-xs focus:outline-none focus:border-indigo-400 resize-none font-sans"
+                  class="w-full bg-slate-950 border border-indigo-800/60 rounded-lg p-3 text-slate-100 text-xs focus:outline-none focus:border-indigo-400 resize-y min-h-[140px] max-h-[700px] leading-relaxed font-sans"
                 ></textarea>
                 <p class="text-[10px] text-slate-500 mt-1">
                   * Этот промпт автоматически добавляется в самое начало системных инструкций всех саб-агентов независимо от выбранного проекта.

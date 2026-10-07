@@ -454,7 +454,7 @@
                 bind:value={humanAnswerText}
                 placeholder="Type instructions or confirmation for the agent..."
                 rows="4"
-                class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 resize-none font-mono"
+                class="w-full bg-slate-950 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 resize-y min-h-[90px] max-h-[400px] leading-relaxed font-sans"
               ></textarea>
               <button
                 on:click={() => submitHumanAnswer(humanAnswerText)}
@@ -491,7 +491,7 @@
           placeholder="Напишите, что нужно доделать или уточнить по задаче..."
           rows="2"
           disabled={isSendingFollowup || $sessionStore.status === 'running'}
-          class="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-none font-sans disabled:opacity-50"
+          class="flex-1 bg-slate-900 border border-slate-800 rounded-lg p-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 resize-y min-h-[70px] max-h-[350px] leading-relaxed font-sans disabled:opacity-50"
         ></textarea>
         <button
           on:click={handleSendFollowup}

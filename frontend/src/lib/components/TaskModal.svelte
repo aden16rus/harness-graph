@@ -204,9 +204,9 @@
           <textarea
             id="task-instructions-input"
             bind:value={taskText}
-            rows="4"
+            rows="5"
             placeholder="Опишите задачу для команды саб-агентов..."
-            class="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-slate-100 focus:outline-none focus:border-indigo-500 font-mono text-xs resize-none"
+            class="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 text-slate-100 focus:outline-none focus:border-indigo-500 font-sans text-xs resize-y min-h-[140px] max-h-[600px] leading-relaxed"
           ></textarea>
         </div>
 
