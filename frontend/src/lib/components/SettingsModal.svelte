@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { projectsList, activeProjectId, fetchProjects, setActiveProject, deleteProject as apiDeleteProject } from '../stores/projectStore';
+  import { projectsList, activeProjectId, activeProject, fetchProjects, setActiveProject, deleteProject as apiDeleteProject } from '../stores/projectStore';
   import { systemSettingsStore, fetchSystemSettings, saveSystemSettings as apiSaveSettings } from '../stores/settingsStore';
   import FolderPickerModal from './FolderPickerModal.svelte';
 
@@ -74,6 +74,8 @@
 
   const allAvailableSkills = [
     { id: 'todo_write', name: 'Todo Write', desc: 'Формирование и обновление TODO листа с отслеживанием прогресса' },
+    { id: 'memory_save', name: 'Memory Save', desc: 'Сохранение постоянной памяти агента о проекте (стек, команды, особенности)' },
+    { id: 'edit_file', name: 'Edit File', desc: 'Точечное редактирование файлов с наглядным diff в двухоконном режиме' },
     { id: 'read_file', name: 'Read File', desc: 'Чтение файлов в рабочей директории' },
     { id: 'write_file', name: 'Write File', desc: 'Создание и редактирование файлов' },
     { id: 'list_dir', name: 'List Directory', desc: 'Просмотр папок и структуры проекта' },
@@ -1171,6 +1173,45 @@
                       class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-100 text-xs focus:outline-none focus:border-indigo-400 resize-y min-h-[120px] max-h-[600px] leading-relaxed font-sans"
                     ></textarea>
                   </div>
+
+                  <!-- Persistent Project Memory for this Agent -->
+                  {#if !isCreatingNewAgent && newAgent.id}
+                    <div class="p-3.5 rounded-xl bg-slate-950/80 border border-indigo-900/50 space-y-2 shadow-sm">
+                      <div class="flex items-center justify-between">
+                        <label for="agent-memory-box" class="flex items-center gap-1.5 text-xs font-bold text-indigo-300">
+                          <span>🧠</span>
+                          <span>Постоянная память саб-агента (Проект: {$activeProject?.name || 'текущий'})</span>
+                        </label>
+                        <div class="flex items-center gap-2">
+                          {#if memoryState.updatedAt}
+                            <span class="text-[10px] text-slate-500 font-mono">Обновлено: {memoryState.updatedAt}</span>
+                          {/if}
+                          <button
+                            type="button"
+                            on:click={handleSaveAgentMemory}
+                            disabled={memoryState.isSaving}
+                            class="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-medium text-[11px] transition flex items-center gap-1 cursor-pointer"
+                          >
+                            <span>💾</span>
+                            <span>{memoryState.isSaving ? 'Сохранение...' : 'Сохранить память'}</span>
+                          </button>
+                        </div>
+                      </div>
+                      <p class="text-[11px] text-slate-400 leading-normal">
+                        Память сохраняется в базе и автоматически подставляется саб-агенту при старте новых сессий, предотвращая повторное первичное исследование. Агент также может обновлять её через инструмент <code class="text-indigo-300 font-mono">memory_save</code>.
+                      </p>
+                      <textarea
+                        id="agent-memory-box"
+                        bind:value={memoryState.content}
+                        rows="4"
+                        placeholder="- Стек: Rust, Cargo, ONNX
+- Ключевые файлы: src/main.rs, src/config.rs
+- Команды: cargo test, cargo build --release
+- Окружение: Docker контейнер app-container"
+                        class="w-full bg-slate-900 border border-slate-700/80 rounded-lg p-2.5 text-slate-100 font-mono text-xs focus:outline-none focus:border-indigo-400 resize-y min-h-[90px] leading-relaxed"
+                      ></textarea>
+                    </div>
+                  {/if}
 
                   <div>
                     <span class="block text-slate-300 font-medium mb-1.5">Разрешенные скилы (Tool Permissions):</span>

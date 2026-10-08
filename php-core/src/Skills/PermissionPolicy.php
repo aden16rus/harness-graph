@@ -9,8 +9,13 @@ final class PermissionPolicy
 {
     public function isAllowed(Agent $agent, string $skillName): bool
     {
-        // todo_write is a mandatory cognitive planning tool universally available to all agents
-        if ($skillName === 'todo_write') {
+        // todo_write and memory_save are mandatory cognitive & memory tools universally available to all agents
+        if ($skillName === 'todo_write' || $skillName === 'memory_save') {
+            return true;
+        }
+
+        // If an agent is allowed to write files, it is also allowed to surgically edit files
+        if ($skillName === 'edit_file' && $agent->allowsSkill('write_file')) {
             return true;
         }
 

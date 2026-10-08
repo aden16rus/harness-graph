@@ -231,6 +231,46 @@ switch ($command) {
         echo json_encode(['ok' => true, 'agent' => $agent->toArray()], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
         break;
 
+    case 'agents:memory:get':
+        $app->migrate();
+        $agentId = $cliOptions['agent-id'] ?? ($cliOptions['agent_id'] ?? ($argv[2] ?? ''));
+        $projectId = $cliOptions['project-id'] ?? ($cliOptions['project_id'] ?? ($argv[3] ?? 'proj_default'));
+        $pdo = \Harness\Infrastructure\Database\Connection::get($dbPath);
+        $stmt = $pdo->prepare('SELECT * FROM agent_memories WHERE agent_id = :aid AND project_id = :pid');
+        $stmt->execute([':aid' => $agentId, ':pid' => $projectId]);
+        $row = $stmt->fetch();
+        if (!$row) {
+            echo json_encode(['agent_id' => $agentId, 'project_id' => $projectId, 'content' => '', 'updated_at' => null], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        } else {
+            echo json_encode(['agent_id' => $row['agent_id'], 'project_id' => $row['project_id'], 'content' => $row['content'], 'updated_at' => $row['updated_at']], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        }
+        break;
+
+    case 'agents:memory:save':
+        $app->migrate();
+        $raw = file_get_contents('php://stdin');
+        if (trim((string)$raw) === '' && isset($argv[2])) {
+            $raw = $argv[2];
+        }
+        $data = json_decode((string)$raw, true) ?: [];
+        $agentId = (string)($data['agent_id'] ?? ($cliOptions['agent-id'] ?? ''));
+        $projectId = (string)($data['project_id'] ?? ($cliOptions['project-id'] ?? 'proj_default'));
+        $content = trim((string)($data['content'] ?? ''));
+        if ($agentId !== '') {
+            $pdo = \Harness\Infrastructure\Database\Connection::get($dbPath);
+            $now = gmdate('Y-m-d H:i:s');
+            $memId = 'mem_' . $agentId . '_' . $projectId;
+            $stmt = $pdo->prepare('
+                INSERT INTO agent_memories (id, agent_id, project_id, content, updated_at)
+                VALUES (:id, :aid, :pid, :content, :updated)
+                ON CONFLICT(agent_id, project_id) DO UPDATE SET
+                    content = excluded.content,
+                    updated_at = excluded.updated_at
+            ');
+            $stmt->execute([':id' => $memId, ':aid' => $agentId, ':pid' => $projectId, ':content' => $content, ':updated' => $now]);
+        }
+        echo json_encode(['ok' => true, 'agent_id' => $agentId, 'project_id' => $projectId, 'content' => $content], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+        break;
     case 'agents:delete':
         $app->migrate();
         $id = $nonOptionArgs[1] ?? $cliOptions['id'] ?? ($argv[2] ?? '');
@@ -408,6 +448,7 @@ switch ($command) {
                 'outputResult' => (string)$r['output_result'],
                 'promptTokens' => (int)$r['prompt_tokens'],
                 'completionTokens' => (int)$r['completion_tokens'],
+                'contextTokens' => (int)($r['context_tokens'] ?? 0),
                 'durationMs' => (int)$r['duration_ms'],
                 'activeTool' => $r['active_tool'] ? (string)$r['active_tool'] : null,
                 'startedAt' => (string)$r['started_at'],

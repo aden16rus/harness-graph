@@ -59,14 +59,27 @@ final class WriteFileSkill implements SkillInterface
             return SkillResult::fail("Failed to create directory structure: {$dir}");
         }
 
+        $original = file_exists($safePath) ? @file_get_contents($safePath) : false;
+
         $written = @file_put_contents($safePath, $content);
         if ($written === false) {
             return SkillResult::fail("Failed to write to file: {$rawPath}");
         }
 
+        $payload = [
+            'path' => $rawPath,
+            'bytes' => $written,
+        ];
+
+        if ($original !== false) {
+            $payload['old_content'] = $original;
+            $payload['new_content'] = $content;
+            $payload['is_edit'] = true;
+        }
+
         return SkillResult::ok(
             "Successfully wrote {$written} bytes to {$rawPath}",
-            ['path' => $rawPath, 'bytes' => $written]
+            $payload
         );
     }
 }

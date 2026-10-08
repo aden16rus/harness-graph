@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"log"
 	"net/http"
 	"strings"
@@ -488,14 +489,38 @@ func (c *Client) ChatStream(
 		LatencyMs:        totalLatency.Milliseconds(),
 	}
 
-	if usage != nil {
+	if usage != nil && usage.PromptTokens > 0 {
 		res.PromptTokens = usage.PromptTokens
 		res.CompletionTokens = usage.CompletionTokens
 		res.TotalTokens = usage.TotalTokens
 	} else {
-		// Heuristic approximation if usage was not returned in SSE
-		res.CompletionTokens = len(strings.Fields(res.Content)) * 4 / 3
-		res.PromptTokens = len(req.Messages) * 20
+		// Accurate token estimation across all messages, tool definitions, tool calls, and output
+		chars := 0
+		for _, m := range req.Messages {
+			chars += len(m.Content) + len(m.Role) + len(m.Name) + len(m.ToolCallID)
+			for _, tc := range m.ToolCalls {
+				chars += len(tc.Function.Name) + len(tc.Function.Arguments)
+			}
+		}
+		for _, t := range req.Tools {
+			chars += len(t.Function.Name) + len(t.Function.Description)
+			if t.Function.Parameters != nil {
+				paramBytes, _ := json.Marshal(t.Function.Parameters)
+				chars += len(paramBytes)
+			}
+		}
+		pTokens := int(math.Ceil(float64(chars) / 3.5))
+		if pTokens < 1 {
+			pTokens = 1
+		}
+		res.PromptTokens = pTokens
+
+		outChars := len(res.Content) + len(res.ReasoningContent)
+		for _, tc := range res.ToolCalls {
+			outChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
+		cTokens := int(math.Ceil(float64(outChars) / 3.5))
+		res.CompletionTokens = cTokens
 		res.TotalTokens = res.PromptTokens + res.CompletionTokens
 	}
 

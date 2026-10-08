@@ -51,12 +51,12 @@ final readonly class SqliteExecutionNodeRepository implements ExecutionNodeRepos
         $stmt = $this->pdo->prepare('
             INSERT INTO execution_nodes (
                 id, session_id, parent_node_id, agent_id, agent_name, role, status, depth,
-                input_prompt, output_result, prompt_tokens, completion_tokens, duration_ms,
+                input_prompt, output_result, prompt_tokens, completion_tokens, context_tokens, duration_ms,
                 active_tool, started_at, finished_at, dialog, tool_calls, todos, expected_outcome
             )
             VALUES (
                 :id, :sid, :pid, :aid, :aname, :role, :status, :depth,
-                :input, :output, :p_tokens, :c_tokens, :duration,
+                :input, :output, :p_tokens, :c_tokens, :ctx_tokens, :duration,
                 :tool, :started, :finished, :dialog, :tool_calls, :todos, :expected_outcome
             )
             ON CONFLICT(id) DO UPDATE SET
@@ -64,6 +64,7 @@ final readonly class SqliteExecutionNodeRepository implements ExecutionNodeRepos
                 output_result = excluded.output_result,
                 prompt_tokens = excluded.prompt_tokens,
                 completion_tokens = excluded.completion_tokens,
+                context_tokens = excluded.context_tokens,
                 duration_ms = excluded.duration_ms,
                 active_tool = excluded.active_tool,
                 finished_at = excluded.finished_at,
@@ -130,6 +131,7 @@ final readonly class SqliteExecutionNodeRepository implements ExecutionNodeRepos
             promptTokens: (int)$row['prompt_tokens'],
             completionTokens: (int)$row['completion_tokens'],
             durationMs: (int)$row['duration_ms'],
+            contextTokens: (int)($row['context_tokens'] ?? 0),
             activeTool: $row['active_tool'] ? (string)$row['active_tool'] : null,
             startedAt: (string)$row['started_at'],
             finishedAt: $row['finished_at'] ? (string)$row['finished_at'] : null,

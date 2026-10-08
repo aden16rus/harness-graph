@@ -145,14 +145,14 @@
       </div>
     </div>
 
-    <!-- Tokens Counter -->
-    <div class="flex items-center gap-2">
-      <span class="text-slate-400">Tokens:</span>
+    <!-- Tokens Counter: Cumulative API Consumption -->
+    <div class="flex items-center gap-2" title="Суммарный расход токенов в API за всю сессию">
+      <span class="text-slate-400">Расход API:</span>
       <span class="font-mono font-semibold text-emerald-400">
         {($sessionStore.totalPromptTokens + $sessionStore.totalCompletionTokens).toLocaleString()}
       </span>
-      <span class="text-slate-500 text-[10px] hidden md:inline">
-        (P: {$sessionStore.totalPromptTokens.toLocaleString()} / C: {$sessionStore.totalCompletionTokens.toLocaleString()})
+      <span class="text-slate-500 text-[10px] font-mono hidden md:inline" title="Отправлено в промптах / Получено в ответах">
+        (Отпр: {$sessionStore.totalPromptTokens.toLocaleString()} / Получ: {$sessionStore.totalCompletionTokens.toLocaleString()})
       </span>
     </div>
 

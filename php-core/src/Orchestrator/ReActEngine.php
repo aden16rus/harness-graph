@@ -211,10 +211,40 @@ final class ReActEngine
 
             // Separate context window limit (threshold for history compaction)
             $effectiveContextLimit = $subagentContextTokens > 0 ? $subagentContextTokens : 65536;
-            $fittedMessages = $this->contextManager->fitContextWindow($history, $effectiveContextLimit);
+
+            // Check if context compaction is needed
+            $compactionResult = $this->contextManager->compactHistory($history, $effectiveContextLimit);
+            if ($compactionResult['compacted']) {
+                $history = $compactionResult['messages'];
+
+                $compactionNotice = "📦 [Сжатие контекста]: Превышен лимит контекстного окна ({$compactionResult['before_tokens']}/{$effectiveContextLimit} токенов). Выполнено сжатие {$compactionResult['compacted_count']} сообщений предыстории (размер контекста снижен до ~{$compactionResult['after_tokens']} токенов).\n\n" . $compactionResult['summary'];
+
+                $node->dialog[] = [
+                    'role' => 'system',
+                    'step' => $step,
+                    'text' => $compactionNotice,
+                    'is_compaction' => true,
+                    'before_tokens' => $compactionResult['before_tokens'],
+                    'after_tokens' => $compactionResult['after_tokens'],
+                    'summary' => $compactionResult['summary'],
+                    'timestamp' => gmdate('Y-m-d H:i:s'),
+                ];
+
+                $this->ipcClient->publishEvent('graph.context_compacted', $session->id, $node->id, [
+                    'step' => $step,
+                    'before_tokens' => $compactionResult['before_tokens'],
+                    'after_tokens' => $compactionResult['after_tokens'],
+                    'limit' => $effectiveContextLimit,
+                    'summary' => $compactionResult['summary'],
+                    'compacted_count' => $compactionResult['compacted_count'],
+                    'message' => $compactionNotice,
+                ]);
+
+                $this->nodeRepo->save($node);
+            }
 
             // Prepare messages payload for LLM
-            $messagesPayload = array_map(static fn(Message $m) => $m->toArray(), $fittedMessages);
+            $messagesPayload = array_map(static fn(Message $m) => $m->toArray(), $history);
 
             $chatReq = [
                 'model' => $agent->model,
@@ -291,17 +321,22 @@ final class ReActEngine
             $promptTokens = (int)($llmResponse['prompt_tokens'] ?? 0);
             $completionTokens = (int)($llmResponse['completion_tokens'] ?? 0);
 
-            // Aggregate tokens
+            // 1. Current Context Window size for this node (prompt tokens of active call)
+            $node->contextTokens = $promptTokens;
+
+            // 2. Cumulative API tokens consumed across all calls
             $node->promptTokens += $promptTokens;
             $node->completionTokens += $completionTokens;
             $session->totalPromptTokens += $promptTokens;
             $session->totalCompletionTokens += $completionTokens;
             $this->sessionRepo->save($session);
 
-            // Publish live real-time token telemetry event to graph
+            // Publish live real-time token telemetry event to graph (both context window and cumulative total)
             $this->ipcClient->publishEvent('graph.node_tokens', $session->id, $node->id, [
+                'context_tokens' => $node->contextTokens,
                 'prompt_tokens' => $node->promptTokens,
                 'completion_tokens' => $node->completionTokens,
+                'total_tokens' => $node->promptTokens + $node->completionTokens,
                 'step' => $step,
             ]);
 

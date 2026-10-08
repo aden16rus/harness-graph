@@ -38,7 +38,14 @@ services:
       # Target project workspace
       - ${WORKSPACE_PATH:-./workspace}:/workspace
       # Persistent sqlite db, logs, traces
+      # Persistent sqlite db, logs, traces
       - ./data:/data
+      # Live development mounts
+      - ./php-core:/app/php-core
+      - ./frontend/dist:/app/frontend/dist
+      - ./docker/entrypoint.sh:/app/entrypoint.sh
+      - ./go-engine/bin/harness-engine:/app/go-engine/bin/harness-engine
+      - ./go-engine/bin/harness-engine:/app/go-engine/bin/harness-engine
     networks:
       - harness-net
 

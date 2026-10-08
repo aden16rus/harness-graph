@@ -149,18 +149,21 @@
     </div>
   {/if}
 
-  <!-- Footer Telemetry -->
-  <div class="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
-    <div class="flex items-center gap-1">
-      <span class="text-slate-500">Tok:</span>
-      <span class="text-slate-300 font-semibold">
-        {((data?.promptTokens || 0) + (data?.completionTokens || 0)).toLocaleString()}
-      </span>
+  <!-- Footer Telemetry: Context Window & Cumulative API Traffic -->
+  <div class="mt-2.5 pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+    <div class="flex items-center gap-2">
+      <div class="flex items-center gap-0.5" title="Текущий размер контекстного окна ноды">
+        <span class="text-slate-500">Ctx:</span>
+        <span class="text-cyan-400 font-semibold">{((data?.contextTokens || 0)).toLocaleString()}</span>
+      </div>
+      <div class="flex items-center gap-0.5" title="Суммарно потрачено токенов в API (отправлено + получено)">
+        <span class="text-slate-500">API:</span>
+        <span class="text-emerald-400 font-semibold">{((data?.promptTokens || 0) + (data?.completionTokens || 0)).toLocaleString()}</span>
+      </div>
     </div>
 
     {#if (data?.durationMs || 0) > 0}
       <div class="flex items-center gap-1">
-        <span class="text-slate-500">Time:</span>
         <span class="text-slate-300">{(data.durationMs / 1000).toFixed(1)}s</span>
       </div>
     {/if}

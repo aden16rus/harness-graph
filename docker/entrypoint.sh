@@ -6,8 +6,7 @@ mkdir -p /data/logs /var/run /workspace
 
 # Set permissions if running as root
 if [ "$(id -u)" = "0" ]; then
-    chown -R ${PUID:-1000}:${PGID:-1000} /data /workspace /var/run || true
-    # Allow socket access
+    chown ${PUID:-1000}:${PGID:-1000} /data /var/run /workspace || true
     chmod 777 /var/run || true
 fi
 

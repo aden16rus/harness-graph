@@ -172,8 +172,37 @@ class WebSocketManager {
               ...node,
               promptTokens: data.prompt_tokens ?? node.promptTokens,
               completionTokens: data.completion_tokens ?? node.completionTokens,
+              contextTokens: data.context_tokens ?? node.contextTokens ?? 0,
             };
             updated.set(node_id, copy);
+          }
+          break;
+        }
+
+        case 'graph.context_compacted': {
+          const node = updated.get(node_id);
+          if (node) {
+            const notice = data.message || `📦 [Сжатие контекста]: Превышен лимит контекстного окна (${data.before_tokens}/${data.limit} токенов). Выполнено сжатие ${data.compacted_count} сообщений.`;
+            const exists = node.dialog.some(d => d.text === notice || (d.is_compaction && d.step === data.step));
+            if (!exists) {
+              updated.set(node_id, {
+                ...node,
+                contextTokens: data.after_tokens ?? node.contextTokens,
+                dialog: [
+                  ...node.dialog,
+                  {
+                    role: 'system',
+                    step: data.step,
+                    text: notice,
+                    is_compaction: true,
+                    before_tokens: data.before_tokens,
+                    after_tokens: data.after_tokens,
+                    summary: data.summary,
+                    timestamp: now,
+                  },
+                ],
+              });
+            }
           }
           break;
         }
@@ -587,6 +616,7 @@ export async function loadSessionGraph(sessionId: string): Promise<boolean> {
     for (const node of data.nodes || []) {
       newMap.set(node.id, {
         ...node,
+        contextTokens: (node as any).context_tokens || 0,
         todos: node.todos || [],
         expectedOutcome: node.expected_outcome || node.expectedOutcome || '',
       });

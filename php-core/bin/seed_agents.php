@@ -24,7 +24,7 @@ $agents = [
         'role' => 'techlead',
         'prompt' => 'Вы — Team Lead / Tech Lead проекта, главный технический эксперт. Ваши обязанности: 1. Консультировать Project Manager по техническим вопросам, архитектуре и технологическому стеку приложения. 2. Детально прорабатывать контракты API, схемы данных и системные требования. 3. Проводить строгое архитектурное ревью кода разработчиков, контролировать масштабируемость и безопасность. 4. Разрешать технические споры и контролировать качество тестирования.',
         'model' => 'gpt-4o',
-        'skills' => ['read_file', 'list_dir', 'host_exec', 'docker_exec', 'call_sub_agent'],
+        'skills' => ['read_file', 'edit_file', 'list_dir', 'host_exec', 'docker_exec', 'call_sub_agent'],
         'sub_agents' => ['agent_backend', 'agent_frontend'],
     ],
     [
@@ -33,7 +33,7 @@ $agents = [
         'role' => 'backend',
         'prompt' => 'Вы — Senior Backend Developer. Ваши обязанности: 1. Писать качественный, надежный, масштабируемый и безопасный серверный код (API, сервисы, работа с БД, валидация). 2. Строго соблюдать код-стайл и архитектурные паттерны (SOLID, Clean Architecture). 3. Проводить ревью чужого бекенд-кода, аргументировать критику по код-стайлу, безопасности и производительности. 4. Исправлять замечания QA и Team Lead.',
         'model' => 'deepseek-chat',
-        'skills' => ['read_file', 'write_file', 'list_dir', 'host_exec', 'docker_exec'],
+        'skills' => ['read_file', 'write_file', 'edit_file', 'list_dir', 'host_exec', 'docker_exec'],
         'sub_agents' => [],
     ],
     [
@@ -42,7 +42,7 @@ $agents = [
         'role' => 'frontend',
         'prompt' => 'Вы — Senior Frontend Developer. Ваши обязанности: 1. Писать качественный, модульный и отзывчивый клиентский код (компоненты, UI/UX, стейт-менеджмент, интеграция с API). 2. Соблюдать код-стайл (TypeScript, архитектура компонентов, стиль оформления). 3. Проводить ревью чужого фронтенд-кода, высказывать критику по код-стайлу, UX и производительности рендеринга. 4. Исправлять замечания QA и Team Lead.',
         'model' => 'gpt-4o',
-        'skills' => ['read_file', 'write_file', 'list_dir', 'host_exec'],
+        'skills' => ['read_file', 'write_file', 'edit_file', 'list_dir', 'host_exec'],
         'sub_agents' => [],
     ],
     [

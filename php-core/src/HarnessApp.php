@@ -28,6 +28,8 @@ use Harness\Skills\Builtin\ListDirectorySkill;
 use Harness\Skills\Builtin\ReadFileSkill;
 use Harness\Skills\Builtin\WriteFileSkill;
 use Harness\Skills\Builtin\TodoWriteSkill;
+use Harness\Skills\Builtin\EditFileSkill;
+use Harness\Skills\Builtin\MemorySaveSkill;
 use Harness\Skills\PermissionPolicy;
 use Harness\Skills\SkillRegistry;
 use PDO;

@@ -28,6 +28,10 @@ export interface DialogMessage {
   output?: string;
   error?: string;
   durationMs?: number;
+  is_compaction?: boolean;
+  before_tokens?: number;
+  after_tokens?: number;
+  summary?: string;
 }
 
 export interface AgentNodeData {
@@ -43,6 +47,7 @@ export interface AgentNodeData {
   activeTool?: string;
   promptTokens: number;
   completionTokens: number;
+  contextTokens?: number;
   durationMs: number;
   llm_profile_id?: string;
   startedAt: string;

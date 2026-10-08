@@ -698,6 +698,41 @@ func main() {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	})
 
+	mux.HandleFunc("/api/agents/memory", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		if r.Method == http.MethodGet {
+			agentID := r.URL.Query().Get("agent_id")
+			projectID := r.URL.Query().Get("project_id")
+			if projectID == "" {
+				projectID = "proj_default"
+			}
+			out, err := runPHPCommand(cfg.PHPBin, cfg.PHPHarness, "agents:memory:get", fmt.Sprintf("--agent-id=%s", agentID), fmt.Sprintf("--project-id=%s", projectID))
+			if err != nil {
+				http.Error(w, fmt.Sprintf("PHP error: %v (%s)", err, string(out)), http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write(out)
+			return
+		}
+
+		if r.Method == http.MethodPost {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "Invalid body: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			out, err := runPHPCommandWithStdin(cfg.PHPBin, cfg.PHPHarness, body, "agents:memory:save")
+			if err != nil {
+				http.Error(w, fmt.Sprintf("PHP error: %v (%s)", err, string(out)), http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write(out)
+			return
+		}
+
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	})
+
 	// API Human Answer
 	mux.HandleFunc("/api/human/answer", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

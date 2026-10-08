@@ -1,5 +1,6 @@
 <script lang="ts">
   import { nodesStore, selectedNodeId, wsManager, sessionStore, sendFollowupMessage } from '../stores/websocket';
+  import { activeProjectId, activeProject } from '../stores/projectStore';
   import type { AgentNodeData } from '../types';
 
   let activeTab: 'dialog' | 'human' = 'dialog';
@@ -70,10 +71,94 @@
     }
   }
 
+  let inspectorMemory = {
+    isViewing: false,
+    content: '',
+    updatedAt: '',
+    isSaving: false,
+  };
+  let diffSplitModes: Record<string, boolean> = {};
+
+  interface DiffBlockLine {
+    oldLine?: string;
+    newLine?: string;
+    oldNum?: number;
+    newNum?: number;
+    type: 'unchanged' | 'deleted' | 'added' | 'modified';
+  }
+
+  function getDiffLines(oldStr: string = '', newStr: string = ''): DiffBlockLine[] {
+    const oldLines = oldStr ? oldStr.split(/\r?\n/) : [];
+    const newLines = newStr ? newStr.split(/\r?\n/) : [];
+    const result: DiffBlockLine[] = [];
+    const maxLen = Math.max(oldLines.length, newLines.length);
+
+    for (let i = 0; i < maxLen; i++) {
+      const hasOld = i < oldLines.length;
+      const hasNew = i < newLines.length;
+      const oText = hasOld ? oldLines[i] : undefined;
+      const nText = hasNew ? newLines[i] : undefined;
+
+      if (hasOld && hasNew) {
+        if (oText === nText) {
+          result.push({ oldLine: oText, newLine: nText, oldNum: i + 1, newNum: i + 1, type: 'unchanged' });
+        } else {
+          result.push({ oldLine: oText, newLine: nText, oldNum: i + 1, newNum: i + 1, type: 'modified' });
+        }
+      } else if (hasOld && !hasNew) {
+        result.push({ oldLine: oText, oldNum: i + 1, type: 'deleted' });
+      } else if (!hasOld && hasNew) {
+        result.push({ newLine: nText, newNum: i + 1, type: 'added' });
+      }
+    }
+    return result;
+  }
+
+  async function toggleInspectorMemory() {
+    inspectorMemory.isViewing = !inspectorMemory.isViewing;
+    if (inspectorMemory.isViewing && currentNode) {
+      try {
+        const res = await fetch(`/api/agents/memory?agent_id=${encodeURIComponent(currentNode.agentId)}&project_id=${encodeURIComponent($activeProjectId)}`);
+        if (res.ok) {
+          const data = await res.json();
+          inspectorMemory.content = data.content || '';
+          inspectorMemory.updatedAt = data.updated_at || '';
+        }
+      } catch (e) {
+        console.error('Failed to load memory:', e);
+      }
+    }
+  }
+
+  async function saveInspectorMemory() {
+    if (!currentNode || inspectorMemory.isSaving) return;
+    inspectorMemory.isSaving = true;
+    try {
+      const res = await fetch('/api/agents/memory', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: currentNode.agentId,
+          project_id: $activeProjectId,
+          content: inspectorMemory.content,
+        }),
+      });
+      if (res.ok) {
+        inspectorMemory.updatedAt = new Date().toISOString().replace('T', ' ').substring(0, 19);
+      }
+    } catch (e) {
+      console.error('Failed to save memory:', e);
+    } finally {
+      inspectorMemory.isSaving = false;
+    }
+  }
+
   function getSkillIcon(name: string = ''): string {
     const n = (name || '').toLowerCase();
     if (n.includes('read_file')) return '📄';
+    if (n.includes('edit_file')) return '✂️';
     if (n.includes('write_file')) return '✏️';
+    if (n.includes('memory_save')) return '🧠';
     if (n.includes('list_dir')) return '📁';
     if (n.includes('host_exec')) return '💻';
     if (n.includes('docker_exec')) return '🐳';
@@ -261,26 +346,78 @@
         </button>
       </div>
 
-      <!-- Quick Metrics Strip -->
-      <div class="mt-3 grid grid-cols-3 gap-2 text-center text-[11px] font-mono bg-slate-900 p-2 rounded-lg border border-slate-800">
-        <div>
-          <span class="text-slate-500 block text-[9px] uppercase">Tokens</span>
+      <!-- Quick Metrics Strip: Both Context Window and Cumulative API Volume -->
+      <div class="mt-3 grid grid-cols-4 gap-1.5 text-center text-[10px] font-mono bg-slate-900 p-2 rounded-lg border border-slate-800">
+        <div title="Текущий размер контекстного окна (активный запрос)">
+          <span class="text-slate-500 block text-[9px] uppercase">Контекст</span>
+          <span class="font-semibold text-cyan-400">
+            {((currentNode.contextTokens || 0)).toLocaleString()}
+          </span>
+        </div>
+        <div title="Суммарный расход токенов в API (отправлено: {currentNode.promptTokens || 0}, получено: {currentNode.completionTokens || 0})">
+          <span class="text-slate-500 block text-[9px] uppercase">Расход API</span>
           <span class="font-semibold text-emerald-400">
             {((currentNode.promptTokens || 0) + (currentNode.completionTokens || 0)).toLocaleString()}
           </span>
         </div>
         <div>
-          <span class="text-slate-500 block text-[9px] uppercase">Latency</span>
+          <span class="text-slate-500 block text-[9px] uppercase">Время</span>
           <span class="font-semibold text-amber-300">
             {currentNode.durationMs ? `${(currentNode.durationMs / 1000).toFixed(1)}s` : '-'}
           </span>
         </div>
         <div>
-          <span class="text-slate-500 block text-[9px] uppercase">Status</span>
+          <span class="text-slate-500 block text-[9px] uppercase">Статус</span>
           <span class="font-semibold text-indigo-300 capitalize truncate">
             {currentNode.status.replace('_', ' ')}
           </span>
         </div>
+      </div>
+
+      <!-- Agent Persistent Memory Toggle Bar -->
+      <div class="mt-2.5">
+        <button
+          type="button"
+          on:click={toggleInspectorMemory}
+          class="w-full py-1.5 px-3 rounded-lg bg-indigo-950/40 hover:bg-indigo-900/50 border border-indigo-800/50 flex items-center justify-between text-xs text-indigo-300 font-medium transition cursor-pointer shadow-sm"
+        >
+          <div class="flex items-center gap-1.5">
+            <span>🧠</span>
+            <span>Постоянная память агента</span>
+            <span class="text-[10px] text-slate-400 font-normal">({currentNode.agentName})</span>
+          </div>
+          <span class="text-[10px] text-indigo-400 font-mono">{inspectorMemory.isViewing ? '▲ Скрыть' : '▼ Просмотр'}</span>
+        </button>
+
+        {#if inspectorMemory.isViewing}
+          <div class="mt-2 p-3 rounded-xl bg-slate-900/95 border border-indigo-900/70 space-y-2 shadow-lg animate-in fade-in duration-200">
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-bold text-slate-300 flex items-center gap-1">
+                <span>Память о проекте:</span>
+                <span class="text-indigo-400 font-mono">{$activeProject?.name || 'текущий'}</span>
+              </span>
+              <div class="flex items-center gap-2">
+                {#if inspectorMemory.updatedAt}
+                  <span class="text-[9px] text-slate-500 font-mono">Обновлено: {inspectorMemory.updatedAt}</span>
+                {/if}
+                <button
+                  type="button"
+                  on:click={saveInspectorMemory}
+                  disabled={inspectorMemory.isSaving}
+                  class="px-2 py-0.5 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-[10px] transition cursor-pointer"
+                >
+                  {inspectorMemory.isSaving ? '...' : 'Сохранить'}
+                </button>
+              </div>
+            </div>
+            <textarea
+              bind:value={inspectorMemory.content}
+              rows="3"
+              placeholder="Стек, ключевые файлы, команды сборки/тестов..."
+              class="w-full bg-slate-950 border border-slate-800 rounded p-2 text-slate-100 font-mono text-[11px] focus:outline-none focus:border-indigo-400 resize-y leading-relaxed"
+            ></textarea>
+          </div>
+        {/if}
       </div>
 
       <!-- Task Plan & Real-time Progress (TODO List) -->
@@ -389,7 +526,31 @@
             {@const stepLabel = getStepLabel(msg, idx, currentNode.dialog)}
 
             {#if msg.role === 'system'}
-              {#if msg.text.startsWith('🛑') || msg.text.startsWith('⚠️') || msg.text.startsWith('🔁')}
+              {#if msg.is_compaction || msg.text.startsWith('📦')}
+                <!-- Dedicated Context Compaction & Summarization Notice Card -->
+                <div class="rounded-xl p-3 text-xs leading-relaxed bg-purple-950/40 border border-purple-700/60 text-purple-200 shadow-md">
+                  <div class="font-bold text-[10px] uppercase tracking-wider mb-1.5 flex items-center justify-between text-purple-300">
+                    <span class="flex items-center gap-1.5">
+                      <span class="text-sm">📦</span>
+                      <span>Сжатие и суммаризация контекста</span>
+                      {#if stepLabel}
+                        <span class="px-1.5 py-0.2 rounded bg-purple-900/60 font-mono text-[9px] border border-purple-700/50 text-purple-300">{stepLabel}</span>
+                      {/if}
+                    </span>
+                    <div class="flex items-center gap-2">
+                      {#if msg.before_tokens && msg.after_tokens}
+                        <span class="px-2 py-0.5 rounded font-mono text-[10px] bg-purple-900/80 border border-purple-600/60 text-purple-200">
+                          {msg.before_tokens.toLocaleString()} tok → {msg.after_tokens.toLocaleString()} tok
+                        </span>
+                      {/if}
+                      <span class="text-purple-400/70 font-mono text-[9px]">{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                    </div>
+                  </div>
+                  <div class="p-2.5 rounded-lg bg-slate-950 font-mono text-[11px] text-purple-100 whitespace-pre-wrap select-text leading-relaxed border border-purple-900/40">
+                    {msg.summary || msg.text}
+                  </div>
+                </div>
+              {:else if msg.text.startsWith('🛑') || msg.text.startsWith('⚠️') || msg.text.startsWith('🔁')}
                 <!-- Alert notification message for anti-loop, token limit, and LLM retry -->
                 <div class="rounded-xl p-3 text-xs leading-relaxed {msg.text.startsWith('🛑') ? 'bg-rose-950/40 border border-rose-800/60 text-rose-200' : 'bg-amber-950/30 border border-amber-800/50 text-amber-200'}">
                   <div class="font-bold text-[10px] uppercase tracking-wider mb-1 flex items-center justify-between {msg.text.startsWith('🛑') ? 'text-rose-400' : 'text-amber-400'}">
@@ -510,8 +671,118 @@
 
                 <!-- Dedicated Body Views by Tool Type -->
                 <div class="mt-3 pt-2.5 border-t border-slate-800/80 space-y-2.5">
-                  {#if msg.name === 'write_file'}
-                    <!-- 1. File Writing View: Collapsible Code Content -->
+                  {#if msg.name === 'edit_file' || (msg.name === 'write_file' && (msg.args?.old_content || msg.args?.old_string || (msg as any).old_content || (msg.args && (msg as any).is_edit)))}
+                    <!-- 1. File Editing with Two-Pane Split Diff View -->
+                    {@const oldText = msg.args?.old_string || msg.args?.old_content || (msg as any).old_content || ''}
+                    {@const newText = msg.args?.new_string || msg.args?.new_content || (msg as any).new_content || msg.args?.content || ''}
+                    {@const callKey = msg.call_id || idx.toString()}
+                    {@const isSplit = diffSplitModes[callKey] !== false}
+                    {@const diffLines = getDiffLines(oldText, newText)}
+                    {@const oldDelCount = (oldText ? oldText.split(/\r?\n/).length : 0)}
+                    {@const newAddCount = (newText ? newText.split(/\r?\n/).length : 0)}
+
+                    <div class="space-y-1.5">
+                      <div class="rounded-lg border border-slate-800 bg-slate-900/80 overflow-hidden shadow-md">
+                        <!-- Diff Header Bar -->
+                        <div class="px-3 py-1.5 bg-slate-900 border-b border-slate-800 flex items-center justify-between text-[11px] font-mono select-none">
+                          <div class="flex items-center gap-2 truncate">
+                            <span class="text-indigo-400 font-bold">✂️ {msg.args?.path || 'file'}</span>
+                            <span class="px-1.5 py-0.2 rounded bg-rose-950/70 text-rose-300 border border-rose-800/60 text-[10px] font-semibold">-{oldDelCount}</span>
+                            <span class="px-1.5 py-0.2 rounded bg-emerald-950/70 text-emerald-300 border border-emerald-800/60 text-[10px] font-semibold">+{newAddCount}</span>
+                          </div>
+                          <div class="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              on:click|stopPropagation={() => diffSplitModes[callKey] = !isSplit}
+                              class="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-medium border border-slate-700 transition cursor-pointer"
+                            >
+                              {isSplit ? '◫ 2 окна (Split)' : '☰ 1 окно (Unified)'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {#if isSplit}
+                          <!-- Two-Pane Split View -->
+                          <div class="grid grid-cols-2 divide-x divide-slate-800 font-mono text-[11px] max-h-80 overflow-y-auto select-text leading-relaxed bg-slate-950">
+                            <!-- Left Pane: Original / Deleted -->
+                            <div class="p-2 space-y-0.5 overflow-x-auto bg-rose-950/10">
+                              <div class="text-[10px] uppercase font-bold text-rose-400/80 mb-1 px-1 flex items-center justify-between border-b border-rose-900/30 pb-1">
+                                <span>Было (Оригинал)</span>
+                                <span>- {oldDelCount} стр.</span>
+                              </div>
+                              {#each diffLines as line}
+                                <div class="flex items-start gap-2 px-1 py-0.5 rounded {line.type === 'modified' || line.type === 'deleted' ? 'bg-rose-950/40 text-rose-300 border-l-2 border-rose-500' : 'text-slate-400'}">
+                                  <span class="w-6 shrink-0 text-right select-none text-[10px] opacity-40">{line.oldNum !== undefined ? line.oldNum : ' '}</span>
+                                  <span class="shrink-0 select-none font-bold text-rose-400/70">{line.type === 'modified' || line.type === 'deleted' ? '-' : ' '}</span>
+                                  <span class="whitespace-pre-wrap break-all flex-1">{line.oldLine ?? ' '}</span>
+                                </div>
+                              {/each}
+                            </div>
+
+                            <!-- Right Pane: Modified / Added -->
+                            <div class="p-2 space-y-0.5 overflow-x-auto bg-emerald-950/10">
+                              <div class="text-[10px] uppercase font-bold text-emerald-400/80 mb-1 px-1 flex items-center justify-between border-b border-emerald-900/30 pb-1">
+                                <span>Стало (Изменения)</span>
+                                <span>+ {newAddCount} стр.</span>
+                              </div>
+                              {#each diffLines as line}
+                                <div class="flex items-start gap-2 px-1 py-0.5 rounded {line.type === 'modified' || line.type === 'added' ? 'bg-emerald-950/40 text-emerald-300 border-l-2 border-emerald-500' : 'text-slate-400'}">
+                                  <span class="w-6 shrink-0 text-right select-none text-[10px] opacity-40">{line.newNum !== undefined ? line.newNum : ' '}</span>
+                                  <span class="shrink-0 select-none font-bold text-emerald-400/70">{line.type === 'modified' || line.type === 'added' ? '+' : ' '}</span>
+                                  <span class="whitespace-pre-wrap break-all flex-1">{line.newLine ?? ' '}</span>
+                                </div>
+                              {/each}
+                            </div>
+                          </div>
+                        {:else}
+                          <!-- Unified View -->
+                          <div class="p-2.5 font-mono text-[11px] max-h-80 overflow-y-auto select-text leading-relaxed bg-slate-950 space-y-0.5">
+                            {#each diffLines as line}
+                              {#if line.type === 'modified'}
+                                <div class="flex items-start gap-2 px-1 py-0.5 rounded bg-rose-950/30 text-rose-300 border-l-2 border-rose-500">
+                                  <span class="w-6 shrink-0 text-right select-none text-[10px] opacity-40">{line.oldNum}</span>
+                                  <span class="shrink-0 select-none text-rose-400 font-bold">-</span>
+                                  <span class="whitespace-pre-wrap break-all flex-1">{line.oldLine}</span>
+                                </div>
+                                <div class="flex items-start gap-2 px-1 py-0.5 rounded bg-emerald-950/30 text-emerald-300 border-l-2 border-emerald-500">
+                                  <span class="w-6 shrink-0 text-right select-none text-[10px] opacity-40">{line.newNum}</span>
+                                  <span class="shrink-0 select-none text-emerald-400 font-bold">+</span>
+                                  <span class="whitespace-pre-wrap break-all flex-1">{line.newLine}</span>
+                                </div>
+                              {:else if line.type === 'deleted'}
+                                <div class="flex items-start gap-2 px-1 py-0.5 rounded bg-rose-950/30 text-rose-300 border-l-2 border-rose-500">
+                                  <span class="w-6 shrink-0 text-right select-none text-[10px] opacity-40">{line.oldNum}</span>
+                                  <span class="shrink-0 select-none text-rose-400 font-bold">-</span>
+                                  <span class="whitespace-pre-wrap break-all flex-1">{line.oldLine}</span>
+                                </div>
+                              {:else if line.type === 'added'}
+                                <div class="flex items-start gap-2 px-1 py-0.5 rounded bg-emerald-950/30 text-emerald-300 border-l-2 border-emerald-500">
+                                  <span class="w-6 shrink-0 text-right select-none text-[10px] opacity-40">{line.newNum}</span>
+                                  <span class="shrink-0 select-none text-emerald-400 font-bold">+</span>
+                                  <span class="whitespace-pre-wrap break-all flex-1">{line.newLine}</span>
+                                </div>
+                              {:else}
+                                <div class="flex items-start gap-2 px-1 py-0.5 text-slate-400">
+                                  <span class="w-6 shrink-0 text-right select-none text-[10px] opacity-40">{line.newNum || line.oldNum}</span>
+                                  <span class="shrink-0 select-none"> </span>
+                                  <span class="whitespace-pre-wrap break-all flex-1">{line.newLine || line.oldLine}</span>
+                                </div>
+                              {/if}
+                            {/each}
+                          </div>
+                        {/if}
+
+                        <div class="px-2.5 py-1.5 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-[11px] font-mono">
+                          <span class="{msg.error ? 'text-rose-400' : 'text-emerald-400'} flex items-center gap-1">
+                            <span>{msg.error ? '❌' : '✓'}</span>
+                            <span>{msg.error || msg.output || 'Файл успешно обновлен'}</span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                  {:else if msg.name === 'write_file'}
+                    <!-- 1b. Standard File Writing View (New File) -->
                     <div class="space-y-1.5">
                       <details open class="group/content rounded-lg border border-slate-800 bg-slate-900/60 overflow-hidden">
                         <summary class="cursor-pointer list-none px-2.5 py-1.5 bg-slate-900/90 hover:bg-slate-900 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono select-none">
@@ -530,6 +801,27 @@
                       <div class="text-[11px] font-mono font-medium flex items-center gap-1.5 {msg.error ? 'text-rose-400' : 'text-emerald-400'} px-1">
                         <span>{msg.error ? '❌' : '✓'}</span>
                         <span>{msg.error || msg.output || 'Файл успешно сохранен'}</span>
+                      </div>
+                    </div>
+
+                  {:else if msg.name === 'memory_save'}
+                    <!-- Memory Save View -->
+                    <div class="p-2.5 rounded-lg bg-indigo-950/40 border border-indigo-800/60 space-y-1.5">
+                      <div class="flex items-center justify-between font-bold text-[11px] text-indigo-300">
+                        <span class="flex items-center gap-1.5">
+                          <span>🧠</span>
+                          <span>Постоянная память саб-агента обновлена</span>
+                        </span>
+                        <span class="text-[10px] font-mono text-indigo-400/80">({(msg.args?.content || '').length} байт)</span>
+                      </div>
+                      {#if msg.args?.content}
+                        <div class="p-2 rounded bg-slate-950 font-mono text-[11px] text-indigo-200 whitespace-pre-wrap select-text leading-relaxed border border-indigo-900/40">
+                          {msg.args.content}
+                        </div>
+                      {/if}
+                      <div class="text-[11px] font-mono text-emerald-400 flex items-center gap-1">
+                        <span>✓</span>
+                        <span>{msg.output || 'Память сохранена в базу данных'}</span>
                       </div>
                     </div>
 

@@ -98,6 +98,19 @@ final class Migrations
             CREATE INDEX IF NOT EXISTS idx_nodes_session ON execution_nodes(session_id);
             CREATE INDEX IF NOT EXISTS idx_nodes_parent ON execution_nodes(parent_node_id);
 
+            
+            CREATE TABLE IF NOT EXISTS agent_memories (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                project_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(agent_id, project_id),
+                FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_memories_agent_proj ON agent_memories(agent_id, project_id);
+
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id TEXT PRIMARY KEY,
                 task TEXT NOT NULL,
