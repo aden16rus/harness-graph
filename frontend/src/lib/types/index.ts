@@ -32,6 +32,9 @@ export interface DialogMessage {
   before_tokens?: number;
   after_tokens?: number;
   summary?: string;
+  pruned_for_llm?: boolean;
+  pruned_at_step?: number;
+  pruned_summary?: string;
 }
 
 export interface AgentNodeData {

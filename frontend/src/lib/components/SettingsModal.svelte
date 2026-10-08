@@ -76,6 +76,8 @@
     { id: 'todo_write', name: 'Todo Write', desc: 'Формирование и обновление TODO листа с отслеживанием прогресса' },
     { id: 'memory_save', name: 'Memory Save', desc: 'Сохранение постоянной памяти агента о проекте (стек, команды, особенности)' },
     { id: 'edit_file', name: 'Edit File', desc: 'Точечное редактирование файлов с наглядным diff в двухоконном режиме' },
+    { id: 'grep_search', name: 'Grep Search', desc: 'Быстрый полнотекстовый поиск по содержимому файлов с номерами строк' },
+    { id: 'file_find', name: 'File Find', desc: 'Поиск файлов по имени и glob-маске без обхода папок' },
     { id: 'read_file', name: 'Read File', desc: 'Чтение файлов в рабочей директории' },
     { id: 'write_file', name: 'Write File', desc: 'Создание и редактирование файлов' },
     { id: 'list_dir', name: 'List Directory', desc: 'Просмотр папок и структуры проекта' },

@@ -30,6 +30,8 @@ use Harness\Skills\Builtin\WriteFileSkill;
 use Harness\Skills\Builtin\TodoWriteSkill;
 use Harness\Skills\Builtin\EditFileSkill;
 use Harness\Skills\Builtin\MemorySaveSkill;
+use Harness\Skills\Builtin\GrepSearchSkill;
+use Harness\Skills\Builtin\FileFindSkill;
 use Harness\Skills\PermissionPolicy;
 use Harness\Skills\SkillRegistry;
 use PDO;
@@ -72,7 +74,7 @@ final class HarnessApp
         $settingsPath = (getenv('DATA_DIR') ?: dirname($dbPath)) . '/settings.json';
         $this->settings = SystemSettings::load($settingsPath);
 
-        $this->contextManager = new ContextManager($this->skillRegistry, $this->agentRepo, $this->settings);
+        $this->contextManager = new ContextManager($this->skillRegistry, $this->agentRepo, $this->settings, $this->permissionPolicy);
 
         $this->subAgentManager = new SubAgentManager(
             agentRepo: $this->agentRepo,

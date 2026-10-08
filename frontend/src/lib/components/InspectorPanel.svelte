@@ -158,6 +158,8 @@
     if (n.includes('read_file')) return '📄';
     if (n.includes('edit_file')) return '✂️';
     if (n.includes('write_file')) return '✏️';
+    if (n.includes('grep_search')) return '🔍';
+    if (n.includes('file_find')) return '🔎';
     if (n.includes('memory_save')) return '🧠';
     if (n.includes('list_dir')) return '📁';
     if (n.includes('host_exec')) return '💻';
@@ -662,6 +664,15 @@
                         {msg.durationMs}ms
                       </span>
                     {/if}
+                    {#if msg.pruned_for_llm}
+                      <span
+                        class="px-2 py-0.5 rounded-full text-[9px] font-mono font-medium bg-amber-950/80 text-amber-300 border border-amber-800/60 flex items-center gap-1 shrink-0"
+                        title={msg.pruned_summary || 'Вывод сжат для LLM во избежание перерасхода токенов'}
+                      >
+                        <span>🗜️</span>
+                        <span>Сжато для LLM {msg.pruned_at_step ? `(шаг ${msg.pruned_at_step})` : ''}</span>
+                      </span>
+                    {/if}
                     <span class="text-[10px] font-mono px-1.5 py-0.5 rounded {msg.status === 'ok' ? 'bg-emerald-950 text-emerald-400 border border-emerald-800/50' : isRunning ? 'bg-amber-950 text-amber-400 border border-amber-800/50' : 'bg-rose-950 text-rose-400 border border-rose-800/50'}">
                       {isRunning ? 'RUNNING' : (msg.status || 'OK').toUpperCase()}
                     </span>
@@ -671,6 +682,15 @@
 
                 <!-- Dedicated Body Views by Tool Type -->
                 <div class="mt-3 pt-2.5 border-t border-slate-800/80 space-y-2.5">
+                  {#if msg.pruned_for_llm}
+                    <div class="p-2 rounded bg-amber-950/20 border border-amber-800/30 text-[10px] text-amber-200/90 font-mono flex items-center justify-between">
+                      <div class="flex items-center gap-1.5 truncate">
+                        <span>🗜️</span>
+                        <span class="truncate">{msg.pruned_summary || 'Вывод этого шага сжат для контекста LLM'}</span>
+                      </div>
+                      <span class="text-slate-500 text-[9px] shrink-0 ml-2">(Полный вывод сохранен ниже)</span>
+                    </div>
+                  {/if}
                   {#if msg.name === 'edit_file' || (msg.name === 'write_file' && (msg.args?.old_content || msg.args?.old_string || (msg as any).old_content || (msg.args && (msg as any).is_edit)))}
                     <!-- 1. File Editing with Two-Pane Split Diff View -->
                     {@const oldText = msg.args?.old_string || msg.args?.old_content || (msg as any).old_content || ''}
@@ -823,6 +843,23 @@
                         <span>✓</span>
                         <span>{msg.output || 'Память сохранена в базу данных'}</span>
                       </div>
+                    </div>
+
+                  {:else if msg.name === 'grep_search' || msg.name === 'file_find'}
+                    <!-- Search Results View -->
+                    <div class="space-y-1.5">
+                      <details open class="group/search rounded-lg border border-slate-800 bg-slate-900/60 overflow-hidden">
+                        <summary class="cursor-pointer list-none px-2.5 py-1.5 bg-slate-900/90 hover:bg-slate-900 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono select-none">
+                          <div class="flex items-center gap-2 truncate">
+                            <span class="text-sky-400 font-bold">{msg.name === 'grep_search' ? '🔍 grep' : '🔎 find'}: "{msg.args?.pattern || ''}"</span>
+                            <span class="text-slate-500 text-[10px]">({msg.args?.path || '.'})</span>
+                          </div>
+                          <span class="text-slate-500 group-open/search:rotate-180 transition-transform text-[10px]">▼</span>
+                        </summary>
+                        <div class="p-2.5 bg-slate-950 font-mono text-[11px] text-slate-200 max-h-64 overflow-y-auto whitespace-pre-wrap select-text leading-relaxed">
+                          {msg.output || msg.text || 'Нет результатов'}
+                        </div>
+                      </details>
                     </div>
 
                   {:else if msg.name === 'host_exec' || msg.name === 'docker_exec'}

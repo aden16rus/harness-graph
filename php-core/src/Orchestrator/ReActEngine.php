@@ -209,13 +209,38 @@ final class ReActEngine
             $turnStep++;
             $step++;
 
-            // Separate context window limit (threshold for history compaction)
+            // 1. Intelligent Rolling Tool Output Pruning (keeps active code files & recent steps)
+            $prepared = $this->contextManager->prepareHistoryForLlm($history, $step);
+            $historyForLlm = $prepared['history'];
+            $prunedInfo = $prepared['pruned_info'];
+
+            // Annotate pruned tool calls in node dialog for UI visibility
+            if (!empty($prunedInfo)) {
+                $hasDialogChanges = false;
+                foreach ($node->dialog as &$dItem) {
+                    if (($dItem['role'] ?? '') === 'tool') {
+                        $cId = $dItem['call_id'] ?? '';
+                        if (isset($prunedInfo[$cId]) && empty($dItem['pruned_for_llm'])) {
+                            $dItem['pruned_for_llm'] = true;
+                            $dItem['pruned_at_step'] = $prunedInfo[$cId]['step'];
+                            $dItem['pruned_summary'] = $prunedInfo[$cId]['summary'];
+                            $hasDialogChanges = true;
+                        }
+                    }
+                }
+                unset($dItem);
+                if ($hasDialogChanges) {
+                    $this->nodeRepo->save($node);
+                }
+            }
+
+            // 2. Separate context window limit check & history compaction
             $effectiveContextLimit = $subagentContextTokens > 0 ? $subagentContextTokens : 65536;
 
             // Check if context compaction is needed
-            $compactionResult = $this->contextManager->compactHistory($history, $effectiveContextLimit);
+            $compactionResult = $this->contextManager->compactHistory($historyForLlm, $effectiveContextLimit);
             if ($compactionResult['compacted']) {
-                $history = $compactionResult['messages'];
+                $historyForLlm = $compactionResult['messages'];
 
                 $compactionNotice = "📦 [Сжатие контекста]: Превышен лимит контекстного окна ({$compactionResult['before_tokens']}/{$effectiveContextLimit} токенов). Выполнено сжатие {$compactionResult['compacted_count']} сообщений предыстории (размер контекста снижен до ~{$compactionResult['after_tokens']} токенов).\n\n" . $compactionResult['summary'];
 
@@ -244,7 +269,7 @@ final class ReActEngine
             }
 
             // Prepare messages payload for LLM
-            $messagesPayload = array_map(static fn(Message $m) => $m->toArray(), $history);
+            $messagesPayload = array_map(static fn(Message $m) => $m->toArray(), $historyForLlm);
 
             $chatReq = [
                 'model' => $agent->model,

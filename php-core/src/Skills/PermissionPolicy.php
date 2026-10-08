@@ -19,6 +19,11 @@ final class PermissionPolicy
             return true;
         }
 
+        // If an agent is allowed to read files, it is also allowed to search file contents and find files
+        if (($skillName === 'grep_search' || $skillName === 'file_find') && $agent->allowsSkill('read_file')) {
+            return true;
+        }
+
         return $agent->allowsSkill($skillName);
     }
 

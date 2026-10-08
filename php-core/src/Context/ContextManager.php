@@ -18,7 +18,8 @@ final class ContextManager
     public function __construct(
         private readonly SkillRegistry $skillRegistry,
         private readonly ?AgentRepositoryInterface $agentRepo = null,
-        private readonly ?SystemSettings $settings = null
+        private readonly ?SystemSettings $settings = null,
+        private readonly ?\Harness\Skills\PermissionPolicy $permissionPolicy = null
     ) {}
 
     /**
@@ -79,10 +80,10 @@ final class ContextManager
             $prompt .= "\n## 🧠 Долговременная постоянная память саб-агента (Persistent Project Memory)\n";
             $prompt .= "Ниже приведена ваша сохраненная постоянная память об этом проекте из предыдущих сессий:\n";
             $prompt .= "```markdown\n{$memContent}\n```\n";
-            $prompt .= "РЕГЛАМЕНТ ИСПОЛЬЗОВАНИЯ ПАМЯТИ:\n";
-            $prompt .= "1. Используйте эти данные сразу! Не выполняйте стандартных повторных действий по первичному исследованию структуры проекта, поиску команд запуска, если они уже зафиксированы в памяти.\n";
-            $prompt .= "2. Если в процессе работы данные изменились или появились новые важные факты — обновите память с помощью инструмента `memory_save`.\n";
-            $prompt .= "3. Держите память КОМПАКТНОЙ: не записывайте полный листинг каталогов или временный статус задач. Сохраняйте только ключевой стек, пути к важным модулям, команды запуска/тестов и специфику окружения.\n\n";
+            $prompt .= "СТРОГИЙ РЕГЛАМЕНТ ЭКОНОМИИ ШАГОВ И ТОКЕНОВ (ПАМЯТЬ ПРОЕКТА):\n";
+            $prompt .= "1. КРИТИЧЕСКИЙ ЗАПРЕТ: Если в блоке памяти уже указаны стек, команды запуска/тестов, docker-контейнер и ключевые модули — СТРОГО ЗАПРЕЩЕНО выполнять повторные разведочные шаги (такие как `list_dir`, `read_file` конфигураций Cargo.toml/package.json, `host_exec` проверки версий). Сразу приступайте к реализации задачи!\n";
+            $prompt .= "2. ТОЧЕЧНЫЙ ПОИСК И ЧТЕНИЕ: Для поиска используйте `grep_search` и `file_find`. Для чтения файлов используйте `read_file` с точечным диапазоном строк (`start_line`, `limit`). Не читайте файлы целиком, если нужен конкретный метод.\n";
+            $prompt .= "3. АКТУАЛИЗАЦИЯ: Если обнаружились реальные изменения (новые библиотеки, команды тестов) — обновите память через `memory_save` (кратко, не более 15-20 строк).\n\n";
         } else {
             $prompt .= "\n## 🧠 Долговременная постоянная память саб-агента (Persistent Memory)\n";
             $prompt .= "У вас пока нет сохраненных записей о проекте.\n";
@@ -92,11 +93,14 @@ final class ContextManager
             $prompt .= "- Сохраняйте только компактные, неизменные факты (не пишите весь список файлов или временный статус).\n\n";
         }
 
-        // Available Tools & Skills description
+        // Available Tools & Skills description (Strictly pruned to allowed tools only)
         $prompt .= "\n## Available Skills & Tools\n";
         $skills = $this->skillRegistry->getAll();
         foreach ($skills as $s) {
-            if ($agent->allowsSkill($s->getName()) || $s->getName() === 'todo_write' || $s->getName() === 'memory_save' || ($s->getName() === 'edit_file' && $agent->allowsSkill('write_file'))) {
+            $isAllowed = $this->permissionPolicy !== null
+                ? $this->permissionPolicy->isAllowed($agent, $s->getName())
+                : ($agent->allowsSkill($s->getName()) || in_array($s->getName(), ['todo_write', 'memory_save'], true));
+            if ($isAllowed) {
                 $prompt .= "- **{$s->getName()}**: {$s->getDescription()}\n";
             }
         }
@@ -278,6 +282,163 @@ final class ContextManager
      * @param array<Message> $history
      * @return array<Message>
      */
+    /**
+     * Prepares message history for LLM by applying intelligent rolling tool output pruning.
+     * Preserves active code files and recent outputs while compacting obsolete logs and listings.
+     *
+     * @param array<Message> $history
+     * @param int $currentStep
+     * @return array{history: array<Message>, pruned_info: array<string, array{summary: string, step: int}>}
+     */
+    public function prepareHistoryForLlm(array $history, int $currentStep): array
+    {
+        $toolCallsMeta = [];
+        $modifiedPaths = [];
+        $readPathsWithIndices = [];
+
+        foreach ($history as $hIdx => $msg) {
+            if ($msg->role === 'assistant' && !empty($msg->toolCalls)) {
+                foreach ($msg->toolCalls as $tc) {
+                    $toolCallsMeta[$tc->id] = [
+                        'name' => $tc->name,
+                        'args' => $tc->arguments,
+                        'history_idx' => $hIdx,
+                    ];
+                    if (in_array($tc->name, ['write_file', 'edit_file'], true)) {
+                        $p = (string)($tc->arguments['path'] ?? '');
+                        if ($p !== '') {
+                            $modifiedPaths[$p] = $hIdx;
+                        }
+                    } elseif ($tc->name === 'read_file') {
+                        $p = (string)($tc->arguments['path'] ?? '');
+                        if ($p !== '') {
+                            $readPathsWithIndices[] = ['path' => $p, 'history_idx' => $hIdx, 'call_id' => $tc->id];
+                        }
+                    }
+                }
+            }
+        }
+
+        // Active Working Set: protect the last 2 distinct files read by read_file
+        $activeFiles = [];
+        for ($i = count($readPathsWithIndices) - 1; $i >= 0; $i--) {
+            $p = $readPathsWithIndices[$i]['path'];
+            if (!in_array($p, $activeFiles, true)) {
+                $activeFiles[] = $p;
+                if (count($activeFiles) >= 2) {
+                    break;
+                }
+            }
+        }
+
+        // Recent Window: protect the last 4 tool messages from any pruning
+        $toolMessageIndices = [];
+        foreach ($history as $idx => $msg) {
+            if ($msg->role === 'tool') {
+                $toolMessageIndices[] = $idx;
+            }
+        }
+
+        $totalToolMsgs = count($toolMessageIndices);
+        $recentThresholdIdx = ($totalToolMsgs > 4) ? $toolMessageIndices[$totalToolMsgs - 4] : -1;
+
+        $prunedHistory = [];
+        $prunedInfo = [];
+
+        foreach ($history as $idx => $msg) {
+            if ($msg->role !== 'tool' || $idx >= $recentThresholdIdx) {
+                $prunedHistory[] = $msg;
+                continue;
+            }
+
+            $callId = $msg->toolCallId ?? '';
+            $meta = $toolCallsMeta[$callId] ?? null;
+            $toolName = $meta['name'] ?? ($msg->name ?? 'tool');
+            $toolArgs = $meta['args'] ?? [];
+            $output = $msg->content;
+            $outputLen = strlen($output);
+
+            $shouldPrune = false;
+            $summary = '';
+
+            if ($toolName === 'read_file') {
+                $filePath = (string)($toolArgs['path'] ?? '');
+                if (in_array($filePath, $activeFiles, true)) {
+                    $shouldPrune = false; // Active working set: KEEP 100% INTACT!
+                } elseif (isset($modifiedPaths[$filePath]) && $modifiedPaths[$filePath] > ($meta['history_idx'] ?? 0)) {
+                    $shouldPrune = true;
+                    $summary = "[File '{$filePath}' was read earlier and subsequently updated. Latest content is in workspace.]";
+                } elseif ($outputLen > 500) {
+                    $linesCount = substr_count($output, "\n");
+                    $shouldPrune = true;
+                    $summary = "[File '{$filePath}' ({$linesCount} lines) was inspected earlier. Re-read targeted lines with read_file if needed.]";
+                }
+            } elseif ($toolName === 'list_dir') {
+                if ($outputLen > 150) {
+                    $dirPath = (string)($toolArgs['path'] ?? '.');
+                    $itemsCount = max(1, substr_count($output, "\n") - 1);
+                    $shouldPrune = true;
+                    $summary = "[Directory listing for '{$dirPath}' ({$itemsCount} items) inspected earlier. Pruned for context efficiency.]";
+                }
+            } elseif (in_array($toolName, ['docker_exec', 'host_exec'], true)) {
+                $cmdRaw = $toolArgs['cmd'] ?? ($toolArgs['command'] ?? '');
+                $cmdStr = is_array($cmdRaw) ? implode(' ', $cmdRaw) : (string)$cmdRaw;
+                if (strlen($cmdStr) > 60) {
+                    $cmdStr = substr($cmdStr, 0, 57) . '...';
+                }
+
+                if (!str_contains($output, 'exit status') && !str_contains($output, 'Error:') && !str_contains($output, 'error:') && !str_contains($output, 'FAILED')) {
+                    if ($outputLen > 200) {
+                        $shouldPrune = true;
+                        $summary = "[Command '{$cmdStr}' completed successfully (exit code 0). Output pruned ({$outputLen} bytes).]";
+                    }
+                } else {
+                    if ($outputLen > 800) {
+                        $lines = explode("\n", $output);
+                        $tailLines = array_slice($lines, -12);
+                        $shouldPrune = true;
+                        $summary = "[Command '{$cmdStr}' failed. Error snippet:]\n" . implode("\n", $tailLines);
+                    }
+                }
+            } elseif (in_array($toolName, ['write_file', 'edit_file'], true)) {
+                $filePath = (string)($toolArgs['path'] ?? 'file');
+                $shouldPrune = true;
+                $summary = "[File '{$filePath}' updated successfully. Output pruned.]";
+            } elseif (in_array($toolName, ['grep_search', 'file_find'], true)) {
+                if ($outputLen > 300) {
+                    $pat = (string)($toolArgs['pattern'] ?? '');
+                    $shouldPrune = true;
+                    $summary = "[Search for '{$pat}' completed earlier. Pruned for context efficiency.]";
+                }
+            } elseif ($toolName === 'memory_save') {
+                $shouldPrune = true;
+                $summary = "[Persistent memory saved to database.]";
+            }
+
+            if ($shouldPrune && $summary !== '') {
+                $prunedHistory[] = new Message(
+                    role: 'tool',
+                    content: $summary,
+                    name: $msg->name,
+                    toolCallId: $msg->toolCallId
+                );
+                if ($callId !== '') {
+                    $prunedInfo[$callId] = [
+                        'summary' => $summary,
+                        'step' => $currentStep,
+                    ];
+                }
+            } else {
+                $prunedHistory[] = $msg;
+            }
+        }
+
+        return [
+            'history' => $prunedHistory,
+            'pruned_info' => $prunedInfo,
+        ];
+    }
+
     public function fitContextWindow(array $history, int $tokenLimit = self::DEFAULT_TOKEN_LIMIT): array
     {
         return $this->compactHistory($history, $tokenLimit)['messages'];

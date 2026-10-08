@@ -15,7 +15,7 @@ $agents = [
         'role' => 'manager',
         'prompt' => 'Вы — Project Manager команды разработки. Ваша главная задача: 1. Проанализировать задачу пользователя, декомпозировать ее на этапы и составить детальный план разработки. 2. Консультироваться с Team Lead (techlead) по архитектуре и стеку через call_sub_agent. 3. Назначать задачи Backend Developer, Frontend Developer, QA Engineer через call_sub_agent. 4. Координировать саб-агентов и проверять результат на соответствие поставленным требованиям. 5. Запрашивать подтверждения у человека через ask_human_expert при необходимости. 6. Предоставить финальный отчет пользователю.',
         'model' => 'gpt-4o',
-        'skills' => ['read_file', 'list_dir', 'call_sub_agent', 'ask_human_expert'],
+        'skills' => ['read_file', 'grep_search', 'file_find', 'list_dir', 'call_sub_agent', 'ask_human_expert'],
         'sub_agents' => ['agent_techlead', 'agent_backend', 'agent_frontend', 'agent_qa'],
     ],
     [
@@ -24,7 +24,7 @@ $agents = [
         'role' => 'techlead',
         'prompt' => 'Вы — Team Lead / Tech Lead проекта, главный технический эксперт. Ваши обязанности: 1. Консультировать Project Manager по техническим вопросам, архитектуре и технологическому стеку приложения. 2. Детально прорабатывать контракты API, схемы данных и системные требования. 3. Проводить строгое архитектурное ревью кода разработчиков, контролировать масштабируемость и безопасность. 4. Разрешать технические споры и контролировать качество тестирования.',
         'model' => 'gpt-4o',
-        'skills' => ['read_file', 'edit_file', 'list_dir', 'host_exec', 'docker_exec', 'call_sub_agent'],
+        'skills' => ['read_file', 'grep_search', 'file_find', 'edit_file', 'list_dir', 'host_exec', 'docker_exec', 'call_sub_agent'],
         'sub_agents' => ['agent_backend', 'agent_frontend'],
     ],
     [
@@ -33,7 +33,7 @@ $agents = [
         'role' => 'backend',
         'prompt' => 'Вы — Senior Backend Developer. Ваши обязанности: 1. Писать качественный, надежный, масштабируемый и безопасный серверный код (API, сервисы, работа с БД, валидация). 2. Строго соблюдать код-стайл и архитектурные паттерны (SOLID, Clean Architecture). 3. Проводить ревью чужого бекенд-кода, аргументировать критику по код-стайлу, безопасности и производительности. 4. Исправлять замечания QA и Team Lead.',
         'model' => 'deepseek-chat',
-        'skills' => ['read_file', 'write_file', 'edit_file', 'list_dir', 'host_exec', 'docker_exec'],
+        'skills' => ['read_file', 'grep_search', 'file_find', 'write_file', 'edit_file', 'list_dir', 'host_exec', 'docker_exec'],
         'sub_agents' => [],
     ],
     [
@@ -42,7 +42,7 @@ $agents = [
         'role' => 'frontend',
         'prompt' => 'Вы — Senior Frontend Developer. Ваши обязанности: 1. Писать качественный, модульный и отзывчивый клиентский код (компоненты, UI/UX, стейт-менеджмент, интеграция с API). 2. Соблюдать код-стайл (TypeScript, архитектура компонентов, стиль оформления). 3. Проводить ревью чужого фронтенд-кода, высказывать критику по код-стайлу, UX и производительности рендеринга. 4. Исправлять замечания QA и Team Lead.',
         'model' => 'gpt-4o',
-        'skills' => ['read_file', 'write_file', 'edit_file', 'list_dir', 'host_exec'],
+        'skills' => ['read_file', 'grep_search', 'file_find', 'write_file', 'edit_file', 'list_dir', 'host_exec'],
         'sub_agents' => [],
     ],
     [
@@ -51,7 +51,7 @@ $agents = [
         'role' => 'qa',
         'prompt' => 'Вы — QA / Test Engineer. Ваши обязанности: 1. Запускать автоматизированные тесты и линтеры в Docker-контейнере через docker_exec или локально через host_exec. 2. Вручную проверять логику и поведение приложения (проверка API ответов, граничных условий, валидации). 3. Выявлять дефекты, оформлять структурированные баг-репорты и возвращать задачи Backend/Frontend разработчикам на доработку. 4. Выдавать финальный Release Sign-off.',
         'model' => 'gpt-4o',
-        'skills' => ['read_file', 'list_dir', 'docker_exec', 'host_exec', 'call_sub_agent'],
+        'skills' => ['read_file', 'grep_search', 'file_find', 'list_dir', 'docker_exec', 'host_exec', 'call_sub_agent'],
         'sub_agents' => ['agent_backend', 'agent_frontend'],
     ],
 ];
