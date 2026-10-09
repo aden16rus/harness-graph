@@ -9,8 +9,7 @@ use Harness\Skills\SkillResult;
 
 final class HostExecSkill implements SkillInterface
 {
-    public const int DEFAULT_MAX_LINES = 100;
-    public const int DEFAULT_HEAD_RATIO_PERCENT = 25; // 25 lines head, 75 lines tail
+    use CommandOutputTruncationTrait;
 
     public function getName(): string
     {
@@ -73,13 +72,14 @@ final class HostExecSkill implements SkillInterface
         $stderr = (string)($resp['stderr'] ?? '');
         $duration = (int)($resp['duration_ms'] ?? 0);
 
-        $output = "Exit Code: {$exitCode} | Duration: {$duration}ms\n";
-        if ($stdout !== '') {
-            $output .= "--- STDOUT ---\n" . $this->truncateLines($stdout, $maxLines, $tail) . "\n";
-        }
-        if ($stderr !== '') {
-            $output .= "--- STDERR ---\n" . $this->truncateLines($stderr, $maxLines, $tail) . "\n";
-        }
+        $output = $this->formatAndTruncateOutput(
+            exitCode: $exitCode,
+            durationMs: $duration,
+            stdout: $stdout,
+            stderr: $stderr,
+            maxLines: $maxLines,
+            tail: $tail
+        );
 
         $data = [
             'exit_code' => $exitCode,
@@ -93,31 +93,5 @@ final class HostExecSkill implements SkillInterface
         }
 
         return SkillResult::ok($output, $data);
-    }
-
-    private function truncateLines(string $text, int $maxLines, bool $tail): string
-    {
-        $lines = explode("\n", rtrim($text, "\r\n"));
-        $total = count($lines);
-        if ($total <= $maxLines) {
-            return $text;
-        }
-
-        if ($tail) {
-            $kept = array_slice($lines, -$maxLines);
-            $omitted = $total - $maxLines;
-            return "[... truncated {$omitted} earlier lines; showing last {$maxLines} of {$total} lines. Specify max_lines=9999 for full output ...]\n" . implode("\n", $kept);
-        }
-
-        // Smart Head + Tail mode (25% head, 75% tail)
-        $headCount = min(25, (int)floor($maxLines * (self::DEFAULT_HEAD_RATIO_PERCENT / 100)));
-        $tailCount = $maxLines - $headCount;
-        $head = array_slice($lines, 0, $headCount);
-        $tailLines = array_slice($lines, -$tailCount);
-        $omitted = $total - $maxLines;
-
-        return implode("\n", $head) . "\n"
-            . "[... truncated {$omitted} intermediate lines of total {$total}. Specify max_lines=9999 to see complete log ...]\n"
-            . implode("\n", $tailLines);
     }
 }
