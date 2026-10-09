@@ -42,12 +42,12 @@ final class DockerExecSkill implements SkillInterface
                 ],
                 'max_lines' => [
                     'type' => 'integer',
-                    'description' => 'Maximum output lines to return (optional, default 100: first 25 head + last 75 tail). Pass 9999 to receive complete un-truncated output.',
+                    'description' => 'Максимальное количество строк вывода (по умолчанию 100). ВАЖНО ДЛЯ ЭКОНОМИИ ТОКЕНОВ: для сборочных команд и прогонов (cargo build, npm i, apt-get), где нужен только итоговый статус, ВСЕГДА указывайте max_lines: 5 или 10. Передавайте 9999 только при глубокой отладке.',
                     'default' => self::DEFAULT_MAX_LINES,
                 ],
                 'tail' => [
                     'type' => 'boolean',
-                    'description' => 'If true, returns strictly the last max_lines (tail) of output (optional, defaults to false).',
+                    'description' => 'Если true, возвращает строго последние max_lines строк (хвост вывода с финальным статусом/ошибкой). Рекомендуется использовать true с max_lines: 5..10 для сборочных операций.',
                     'default' => false,
                 ],
                 'timeout_ms' => [
@@ -78,7 +78,7 @@ final class DockerExecSkill implements SkillInterface
 
         $workDir = (string)($params['work_dir'] ?? '/workspace');
         $timeoutMs = (int)($params['timeout_ms'] ?? 120000);
-        $maxLines = max(10, (int)($params['max_lines'] ?? self::DEFAULT_MAX_LINES));
+        $maxLines = max(1, (int)($params['max_lines'] ?? self::DEFAULT_MAX_LINES));
         $tail = (bool)($params['tail'] ?? false);
 
         try {
@@ -92,6 +92,8 @@ final class DockerExecSkill implements SkillInterface
         $stderr = (string)($resp['stderr'] ?? '');
         $duration = (int)($resp['duration_ms'] ?? 0);
 
+        $cmdStr = implode(' ', $cmd);
+
         $output = $this->formatAndTruncateOutput(
             exitCode: $exitCode,
             durationMs: $duration,
@@ -99,7 +101,8 @@ final class DockerExecSkill implements SkillInterface
             stderr: $stderr,
             maxLines: $maxLines,
             tail: $tail,
-            container: $container
+            container: $container,
+            commandContext: $cmdStr
         );
 
         $data = [

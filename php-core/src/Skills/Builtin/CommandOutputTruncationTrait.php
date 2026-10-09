@@ -16,7 +16,8 @@ trait CommandOutputTruncationTrait
         string $stderr,
         int $maxLines = self::DEFAULT_MAX_LINES,
         bool $tail = false,
-        ?string $container = null
+        ?string $container = null,
+        string $commandContext = ''
     ): string {
         $prefix = $container !== null
             ? "Container: {$container} | Exit Code: {$exitCode} | Duration: {$durationMs}ms\n"
@@ -71,6 +72,30 @@ trait CommandOutputTruncationTrait
         }
 
         $total = count($combined);
+
+        // Auto-optimize successful verbose build/install commands if caller left default 100 lines
+        $isAutoBuildTail = false;
+        if ($exitCode === 0 && $maxLines === self::DEFAULT_MAX_LINES && !$tail && $total > 25 && $commandContext !== '') {
+            $cmdLower = strtolower($commandContext);
+            if (
+                str_contains($cmdLower, 'docker build')
+                || str_contains($cmdLower, 'docker-compose build')
+                || str_contains($cmdLower, 'docker pull')
+                || str_contains($cmdLower, 'npm install')
+                || str_contains($cmdLower, 'npm i')
+                || str_contains($cmdLower, 'yarn add')
+                || str_contains($cmdLower, 'pnpm i')
+                || str_contains($cmdLower, 'apt-get install')
+                || str_contains($cmdLower, 'apt-get update')
+                || str_contains($cmdLower, 'composer install')
+                || str_contains($cmdLower, 'cargo build')
+            ) {
+                $tail = true;
+                $maxLines = 12;
+                $isAutoBuildTail = true;
+            }
+        }
+
         $resultText = '';
 
         if ($total <= $maxLines) {
@@ -79,9 +104,11 @@ trait CommandOutputTruncationTrait
             if ($tail) {
                 $kept = array_slice($combined, -$maxLines);
                 $omitted = $total - $maxLines;
-                $resultText = $prefix
-                    . "[... truncated {$omitted} earlier lines; showing last {$maxLines} of {$total} lines. Specify max_lines=9999 for full output ...]\n"
-                    . implode("\n", $kept) . "\n";
+                $notice = $isAutoBuildTail
+                    ? "[... Build/install succeeded (exit code 0). {$omitted} intermediate build lines omitted. Showing final {$maxLines} lines ...]\n"
+                    : "[... truncated {$omitted} earlier lines; showing last {$maxLines} of {$total} lines. Specify max_lines=9999 for full output ...]\n";
+
+                $resultText = $prefix . $notice . implode("\n", $kept) . "\n";
             } else {
                 $headCount = min(25, (int)floor($maxLines * 0.25));
                 $tailCount = $maxLines - $headCount;
